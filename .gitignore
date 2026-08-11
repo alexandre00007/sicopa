@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environnements virtuels
+.venv/
+venv/
+env/
+ENV/
+
+# IDE et système
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets et configuration locale
+.env
+.env.*
+!.env.example
+
+# Bases analytiques et fichiers temporaires DuckDB
+*.duckdb
+*.duckdb.wal
+*.db.wal
+traitement/
+
+# Données métier sensibles importées
+*.mdb
+*.accdb
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+*.tsv
+
+# Autoriser d’éventuels modèles versionnés dans assets
+!assets/**/*.xlsx
+!assets/**/*.xlsm
+
+# Rapports, annexes, effectifs et sauvegardes générés
+resultats/
+Resultats/
+Sauvegardes/
+Imports/
+20[0-9][0-9]_T[1-4]_*/
+*.part.xlsx
+
+# Journaux
+*.log
+journaux/
+
+# Construction PyInstaller
+build/
+dist/
+*.toc
+*.pkg
+
+# Fichiers temporaires
+*.tmp
+*.temp
+*.bak
+~$*
