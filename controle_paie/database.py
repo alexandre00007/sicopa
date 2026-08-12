@@ -46,6 +46,17 @@ class Database:
                 colonne_source VARCHAR NOT NULL, colonne_standard VARCHAR NOT NULL,
                 obligatoire BOOLEAN DEFAULT FALSE,
                 PRIMARY KEY (regime, type_source, colonne_source))""",
+            """CREATE TABLE IF NOT EXISTS config_composantes_financieres (
+                code VARCHAR PRIMARY KEY, libelle VARCHAR NOT NULL,
+                colonne_standard VARCHAR, systeme BOOLEAN DEFAULT FALSE,
+                actif BOOLEAN DEFAULT TRUE, cree_le TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+            """CREATE TABLE IF NOT EXISTS config_formules_impact (
+                formule_id VARCHAR PRIMARY KEY, nom VARCHAR NOT NULL,
+                institution_id VARCHAR, regime VARCHAR, rubrique VARCHAR NOT NULL,
+                trimestre_debut VARCHAR NOT NULL, annee_debut INTEGER NOT NULL,
+                aggregation VARCHAR NOT NULL, termes_json VARCHAR NOT NULL,
+                version INTEGER NOT NULL, actif BOOLEAN DEFAULT TRUE,
+                cree_le TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
             """CREATE TABLE IF NOT EXISTS config_filtres_traitement (
                 filtre_id VARCHAR PRIMARY KEY, institution_id VARCHAR NOT NULL,
                 regime VARCHAR NOT NULL, colonne VARCHAR NOT NULL,
@@ -95,6 +106,16 @@ class Database:
         with self.connect() as con:
             for statement in statements:
                 con.execute(statement)
+            con.execute("ALTER TABLE paie_standardisee ADD COLUMN IF NOT EXISTS composantes_supplementaires_json VARCHAR DEFAULT '{}'")
+            con.execute("ALTER TABLE paie_standardisee ADD COLUMN IF NOT EXISTS formule_remuneration_id VARCHAR")
+            con.execute("ALTER TABLE resultats_rapprochement ADD COLUMN IF NOT EXISTS formule_impact_id VARCHAR")
+            builtins=[
+                ("REMUNERATION_BASE","Rémunération de base","remuneration_base"),("TRANSPORT","Transport","transport"),
+                ("PRIME","Prime","prime"),("LOGEMENT","Logement","logement"),("PENSION_RENTE","Pension / rente","pension_rente"),
+                ("AUTRES_REMUNERATIONS","Autres rémunérations","autres_remunerations"),("RETENUES","Retenues","retenues"),("MONTANT_NET","Montant net","montant_net")]
+            for code,label,column in builtins:
+                con.execute("""INSERT INTO config_composantes_financieres(code,libelle,colonne_standard,systeme,actif)
+                    VALUES (?,?,?,TRUE,TRUE) ON CONFLICT(code) DO UPDATE SET libelle=excluded.libelle,colonne_standard=excluded.colonne_standard""",[code,label,column])
             from .runtime import CURRENT_SCHEMA_VERSION
             con.execute("""INSERT INTO sicorpa_meta (cle,valeur) VALUES ('schema_version',?)
                 ON CONFLICT(cle) DO UPDATE SET valeur=excluded.valeur,modifie_le=now()""",[str(CURRENT_SCHEMA_VERSION)])
@@ -169,6 +190,95 @@ class Database:
 
     def delete_column_mapping(self, regime: str, source_type: str, source_column: str) -> None:
         with self.connect() as con:con.execute("DELETE FROM config_mapping_colonnes WHERE regime=? AND type_source=? AND colonne_source=?",[regime,source_type.upper(),source_column])
+
+    DEFAULT_IMPACT_TERMS = [{"code":code,"coefficient":1.0} for code in ["REMUNERATION_BASE","TRANSPORT","PRIME","LOGEMENT","PENSION_RENTE","AUTRES_REMUNERATIONS"]]
+    FORMULA_RUBRICS = ["*","DOUBLON_MATRICULE","DOUBLON_NOM","MATRICULE_MANQUANT","PAYE_NON_DECLARE","PAYE_HORS_PERIMETRE","CONFORME_MATRICULE","CONFORME_NOM"]
+    FORMULA_AGGREGATIONS = ["TOUTES_LIGNES","OCCURRENCES_SUPPLEMENTAIRES","UNIQUE_AGENT","AUCUN_IMPACT"]
+
+    def add_financial_component(self, code: str, label: str) -> None:
+        import re
+        code=code.strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*",code):raise ValueError("Le code composante doit contenir lettres, chiffres et underscores.")
+        if not label.strip():raise ValueError("Le libellé de la composante est obligatoire.")
+        with self.connect() as con:con.execute("""INSERT INTO config_composantes_financieres(code,libelle,colonne_standard,systeme,actif)
+            VALUES (?,?,NULL,FALSE,TRUE) ON CONFLICT(code) DO UPDATE SET libelle=excluded.libelle,actif=TRUE""",[code,label.strip()])
+
+    def list_financial_components(self, active_only: bool=True) -> list[tuple]:
+        query="SELECT code,libelle,colonne_standard,systeme,actif FROM config_composantes_financieres"+(" WHERE actif" if active_only else "")
+        with self.connect() as con:return con.execute(query+" ORDER BY systeme DESC,libelle").fetchall()
+
+    def save_impact_formula(self,name: str,institution_id: str,regime: str,rubric: str,quarter: str,year: int,aggregation: str,terms: list[dict]) -> str:
+        import re,uuid
+        if not name.strip() or not regime.strip():raise ValueError("Nom et régime sont obligatoires.")
+        if rubric not in self.FORMULA_RUBRICS:raise ValueError("Rubrique d’impact inconnue.")
+        if aggregation not in self.FORMULA_AGGREGATIONS:raise ValueError("Agrégation inconnue.")
+        if quarter not in {"T1","T2","T3","T4"}:raise ValueError("Trimestre d’entrée en vigueur invalide.")
+        allowed={row[0] for row in self.list_financial_components()}
+        clean=[]
+        for term in terms:
+            code=str(term.get("code","")).upper();coefficient=float(term.get("coefficient",0))
+            if code not in allowed:raise ValueError(f"Composante inconnue : {code}")
+            if abs(coefficient)>1000:raise ValueError("Le coefficient doit être compris entre -1000 et 1000.")
+            if coefficient:clean.append({"code":code,"coefficient":coefficient})
+        if aggregation!="AUCUN_IMPACT" and not clean:raise ValueError("Ajoutez au moins une composante à la formule.")
+        with self.connect() as con:
+            version=con.execute("SELECT COALESCE(MAX(version),0)+1 FROM config_formules_impact WHERE COALESCE(institution_id,'')=? AND regime=? AND rubrique=?",[institution_id or "",regime,rubric]).fetchone()[0]
+            identifier=str(uuid.uuid4());con.execute("""INSERT INTO config_formules_impact VALUES (?,?,?,?,?,?,?,?,?,?,TRUE,CURRENT_TIMESTAMP)""",[identifier,name.strip(),institution_id or None,regime,rubric,quarter,int(year),aggregation,json.dumps(clean),version])
+            return identifier
+
+    def list_impact_formulas(self,regime: str="",institution_id: str="") -> list[tuple]:
+        conditions=[];params=[]
+        if regime:conditions.append("regime=?");params.append(regime)
+        if institution_id:conditions.append("COALESCE(institution_id,'') IN ('',?)");params.append(institution_id)
+        query="SELECT formule_id,nom,COALESCE(institution_id,''),regime,rubrique,trimestre_debut,annee_debut,aggregation,termes_json,version,actif FROM config_formules_impact"
+        if conditions:query+=" WHERE "+" AND ".join(conditions)
+        with self.connect() as con:return con.execute(query+" ORDER BY annee_debut DESC,trimestre_debut DESC,version DESC",params).fetchall()
+
+    def get_impact_formula(self,formula_id: str) -> dict:
+        if formula_id=="FORMULE_DEFAUT":return self.default_impact_formula()
+        with self.connect() as con:
+            row=con.execute("SELECT formule_id,nom,COALESCE(institution_id,''),regime,rubrique,trimestre_debut,annee_debut,aggregation,termes_json,version,actif,cree_le FROM config_formules_impact WHERE formule_id=?",[formula_id]).fetchone()
+        if not row:raise ValueError("Formule introuvable.")
+        return {"id":row[0],"name":row[1],"institution_id":row[2],"regime":row[3],"rubric":row[4],"quarter":row[5],"year":row[6],"aggregation":row[7],"terms":json.loads(row[8]),"version":row[9],"active":row[10],"created_at":row[11],"system":False}
+
+    def set_impact_formula_active(self,formula_id: str,active: bool) -> None:
+        with self.connect() as con:con.execute("UPDATE config_formules_impact SET actif=? WHERE formule_id=?",[active,formula_id])
+
+    def resolve_impact_formula(self,institution_id: str,regime: str,quarter: str,year: int,rubric: str) -> dict:
+        qnum=int(str(quarter).replace("T",""));rows=self.list_impact_formulas(regime,institution_id)
+        candidates=[]
+        for row in rows:
+            fid,name,iid,reg,rub,qstart,ystart,aggregation,terms_json,version,active=row
+            if not active or rub not in {rubric,"*"}:continue
+            if (int(ystart),int(str(qstart).replace("T","")))>(int(year),qnum):continue
+            specificity=(4 if iid==institution_id else 2 if not iid else 0)+(1 if rub==rubric else 0)
+            if specificity:candidates.append((specificity,int(ystart),int(str(qstart).replace("T","")),int(version),row))
+        if candidates:
+            row=max(candidates,key=lambda x:x[:4])[4]
+            return {"id":row[0],"name":row[1],"institution_id":row[2],"regime":row[3],"rubric":row[4],"quarter":row[5],"year":row[6],"aggregation":row[7],"terms":json.loads(row[8]),"version":row[9]}
+        return self.default_impact_formula()
+
+    def default_impact_formula(self) -> dict:
+        return {"id":"FORMULE_DEFAUT","name":"Formule SICORPA par défaut","institution_id":"","regime":"Tous les régimes","rubric":"*","quarter":"T1","year":2020,"aggregation":"TOUTES_LIGNES","terms":[dict(term) for term in self.DEFAULT_IMPACT_TERMS],"version":1,"system":True}
+
+    def formula_terms_sql(self,terms: list[dict],aggregation: str,alias: str="p",duplicate_rank: str="1") -> str:
+        if aggregation not in self.FORMULA_AGGREGATIONS:raise ValueError("Agrégation inconnue.")
+        components={row[0]:row[2] for row in self.list_financial_components()};expressions=[];prefix=f"{alias}." if alias else ""
+        for term in terms:
+            code=str(term.get("code","")).upper()
+            if code not in components:raise ValueError(f"Composante inconnue : {code}")
+            coefficient=float(term.get("coefficient",0));column=components.get(code)
+            value=f'COALESCE({prefix}"{column}",0)' if column else f"COALESCE(TRY_CAST(json_extract_string({prefix}composantes_supplementaires_json, '$.{code}') AS DECIMAL(38,2)),0)"
+            if coefficient:expressions.append(f"({coefficient})*({value})")
+        expression=" + ".join(expressions) if expressions else "0"
+        if aggregation=="AUCUN_IMPACT":return "0"
+        if aggregation=="OCCURRENCES_SUPPLEMENTAIRES":return f"CASE WHEN {duplicate_rank}>1 THEN ({expression}) ELSE 0 END"
+        if aggregation=="UNIQUE_AGENT":return f"CASE WHEN {duplicate_rank}=1 THEN ({expression}) ELSE 0 END"
+        return expression
+
+    def impact_sql(self,institution_id: str,regime: str,quarter: str,year: int,rubric: str,alias: str="p",duplicate_rank: str="1") -> tuple[str,dict]:
+        formula=self.resolve_impact_formula(institution_id,regime,quarter,year,rubric)
+        return self.formula_terms_sql(formula["terms"],formula["aggregation"],alias,duplicate_rank),formula
 
     PAYROLL_FILTER_COLUMNS = {
         "table_source", "matricule_source", "nom", "prenom", "section", "categorie",

@@ -9,6 +9,7 @@ from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from .database import Database
+from .letters import generate_interpretation_letter
 
 Progress = Optional[Callable[[int, str], None]]
 
@@ -46,7 +47,7 @@ class ReportService:
         slug=re.sub(r"[^A-Za-z0-9]+","_",institution).strip("_").lower();stamp=datetime.now().strftime("%Y%m%d_%H%M%S")
         package=Path(root)/f"{year}_{quarter}_{regime}_{slug}_{stamp}";package.mkdir(parents=True,exist_ok=True)
         progress and progress(1,"Initialisation du dossier de résultats")
-        specs=self._historical_annex_specs(institution_id,regime,quarter,year)
+        specs=self._prepare_impact_specs(self._historical_annex_specs(institution_id,regime,quarter,year),institution_id,regime,quarter,year)
         summaries=[];total=max(1,len(specs))
         for index,spec in enumerate(specs,1):
             folder=package/spec["folder"];folder.mkdir(parents=True,exist_ok=True);target=folder/spec["filename"]
@@ -64,8 +65,11 @@ class ReportService:
             summaries.append({**spec,"count":count,"concerned":concerned,"impact":impact,"relative_path":str(Path(spec["folder"])/spec["filename"]),"effectif_path":str(Path(effectif_folder_name)/effectif_filename)})
         progress and progress(96,"Finalisation du rapport et des liens")
         report=package/"rapport_final.xlsx";filters=self.db.list_treatment_filters(institution_id,regime);self._write_historical_report(report,institution,regime,quarter,year,summaries,filters)
-        progress and progress(99,"Fichier généré : rapport_final.xlsx")
-        progress and progress(100,f"{len(specs)} annexes, {len(specs)} fichiers d’effectifs et rapport final terminés")
+        progress and progress(97,"Fichier généré : rapport_final.xlsx")
+        progress and progress(98,"Rédaction de la lettre d’interprétation")
+        letter=package/"lettre_interpretation.docx";generate_interpretation_letter(letter,institution,regime,quarter,year,summaries,filters)
+        progress and progress(99,"Fichier généré : lettre_interpretation.docx")
+        progress and progress(100,f"{len(specs)} annexes, {len(specs)} fichiers d’effectifs, rapport final et lettre d’interprétation terminés")
         return package
 
     def _historical_annex_specs(self,institution_id: str,regime: str,quarter: str,year: int) -> list[dict]:
@@ -86,7 +90,7 @@ class ReportService:
           spec("annexes_listing","Données du listing de paie filtré","donnees_fichier_paie.xlsx",f"SELECT p.*,p.remuneration_brute_calculee impact_calcule FROM paie_standardisee p WHERE {ps}",pp),
           spec("annexes_listing","Matricules manquants ou non exploitables (NU)","matricules_manquants.xlsx",f"SELECT p.*,p.remuneration_brute_calculee impact_calcule FROM paie_standardisee p WHERE {ps} AND COALESCE(p.matricule_normalise,'') IN ('','NU')",pp),
           spec("annexes_listing","Rapport de validation du listing","rapport_validation.xlsx",f"SELECT p.*,p.remuneration_brute_calculee impact_calcule FROM paie_standardisee p WHERE {ps} AND (COALESCE(p.matricule_normalise,'') IN ('','NU') OR COALESCE(p.nom_normalise,'')='')",pp),
-          spec("annexes_listing","Projection des identifiants du listing","projection_identifiants.xlsx",f"SELECT p.institution_id,p.matricule_source,p.matricule_normalise,p.nom,p.prenom,p.nom_normalise,p.section,p.remuneration_brute_calculee,p.ligne_source,p.remuneration_brute_calculee impact_calcule FROM paie_standardisee p WHERE {ps}",pp),
+          spec("annexes_listing","Projection des identifiants du listing","projection_identifiants.xlsx",f"SELECT p.*,p.remuneration_brute_calculee impact_calcule FROM paie_standardisee p WHERE {ps}",pp),
           spec("annexes_listing","Enregistrements uniques par matricule","enregistrements_uniques_par_matricule.xlsx",f"SELECT p.*,p.remuneration_brute_calculee impact_calcule FROM paie_standardisee p WHERE {ps} AND {valid('matricule_normalise','p')} QUALIFY ROW_NUMBER() OVER(PARTITION BY p.matricule_normalise ORDER BY p.ligne_source)=1",pp),
           spec("annexes_listing","Doublons par matricule hors NU","doublons_par_matricule.xlsx",f"SELECT p.*,p.remuneration_brute_calculee impact_calcule FROM paie_standardisee p WHERE {ps} AND {valid('matricule_normalise','p')} QUALIFY COUNT(*) OVER(PARTITION BY p.matricule_normalise)>1",pp),
           spec("annexes_listing","Matricules partagés uniques hors NU","matricules_partages_uniques.xlsx",f"SELECT p.*,0::DECIMAL(38,2) impact_calcule FROM paie_standardisee p WHERE {ps} AND {valid('matricule_normalise','p')} QUALIFY COUNT(*) OVER(PARTITION BY p.matricule_normalise)>1 AND ROW_NUMBER() OVER(PARTITION BY p.matricule_normalise ORDER BY p.ligne_source)=1",pp),
@@ -129,6 +133,30 @@ class ReportService:
             items.append(spec("annexes_comparaisons",f"Non déclarés mais présents dans le listing filtré par {label}",f"non_declares_payes_par_{label}.xlsx",missing,p0p+scope))
         return items
 
+    @staticmethod
+    def _impact_rubric(label: str) -> str:
+        text=label.lower()
+        if "déclar" in text and "listing" not in text and "hors périmètre" not in text:return "AUCUN_IMPACT"
+        if "doublon" in text and "matricule" in text:return "DOUBLON_MATRICULE"
+        if "doublon" in text and "nom" in text:return "DOUBLON_NOM"
+        if "manquant" in text or "non exploitable" in text:return "MATRICULE_MANQUANT"
+        if "hors périmètre" in text or "ailleurs" in text:return "PAYE_HORS_PERIMETRE"
+        if "non déclar" in text:return "PAYE_NON_DECLARE"
+        if "présents dans le listing" in text:return "CONFORME_MATRICULE" if "matricule" in text else "CONFORME_NOM"
+        return "*"
+
+    def _prepare_impact_specs(self,specs: list[dict],institution_id: str,regime: str,quarter: str,year: int) -> list[dict]:
+        prepared=[]
+        for spec in specs:
+            rubric=self._impact_rubric(spec["label"])
+            if rubric=="AUCUN_IMPACT":formula={"id":"AUCUN_IMPACT","name":"Aucun impact déclaratif","aggregation":"AUCUN_IMPACT","terms":[],"version":1};expression="0"
+            else:
+                rank="ROW_NUMBER() OVER(PARTITION BY q.matricule_normalise ORDER BY q.ligne_source)" if "matricule" in spec["label"].lower() else "ROW_NUMBER() OVER(PARTITION BY q.nom_normalise ORDER BY q.ligne_source)"
+                expression,formula=self.db.impact_sql(institution_id,regime,quarter,year,rubric,"q",rank)
+            wrapped=f"SELECT q.* EXCLUDE(impact_calcule),CAST(({expression}) AS DECIMAL(38,2)) impact_calcule FROM ({spec['query']}) q"
+            prepared.append({**spec,"query":wrapped,"impact_rubric":rubric,"formula":formula})
+        return prepared
+
     def _effectif_query(self,spec: dict) -> str:
         """Return one representative row per person concerned by an annex rubric."""
         label=spec["label"].lower()
@@ -157,6 +185,14 @@ class ReportService:
                 detail_cell=ws.cell(ws.max_row,4);detail_cell.hyperlink=item["relative_path"];detail_cell.style="Hyperlink"
                 effectif_cell=ws.cell(ws.max_row,6);effectif_cell.hyperlink=item["effectif_path"];effectif_cell.style="Hyperlink"
             ws.freeze_panes="A5";ws.auto_filter.ref=f"A4:F{ws.max_row}";ws.column_dimensions["A"].width=58;ws.column_dimensions["B"].width=18;ws.column_dimensions["C"].width=24;ws.column_dimensions["D"].width=55;ws.column_dimensions["E"].width=22;ws.column_dimensions["F"].width=58
+        formula_ws=wb.create_sheet("Formules d’impact");formula_ws.append(["Rubrique","Formule","Version","Agrégation","Expression"]);self._style_header(formula_ws[1])
+        seen=set()
+        for item in summaries:
+            formula=item.get("formula",{});key=(item.get("impact_rubric"),formula.get("id"))
+            if key in seen:continue
+            seen.add(key);expression=" + ".join(f"{term.get('coefficient',0):g} × {term.get('code','')}" for term in formula.get("terms",[])) or "0"
+            formula_ws.append([item.get("impact_rubric"),formula.get("name"),formula.get("version"),formula.get("aggregation"),expression])
+        for letter,width in zip("ABCDE",[28,34,12,30,65]):formula_ws.column_dimensions[letter].width=width
         filter_ws=wb.create_sheet("Filtres du listing");filter_ws.append(["Colonne","Opérateur","Contenu"]);self._style_header(filter_ws[1])
         for _,column,operator,value in (filters or []):filter_ws.append([column,operator,value])
         if not filters:filter_ws.append(["Aucun filtre","—","Tout le listing de l’institution est traité"])

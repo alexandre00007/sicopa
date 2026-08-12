@@ -18,8 +18,20 @@ from .loaders import IngestionService, excel_sheets, list_access_tables, preview
 from .matching import MatchingService
 from .reports import ReportService
 from .explorer import DataExplorerService
+from .file_tools import ocr_available, pdf_to_excel, pdf_to_word, rotate_pdf, tesseract_path
 from .help_content import USER_GUIDE
+from .licensing import CLOCK_ROLLBACK, EXPIRED, EXPIRING, INVALID, TrialManager
 from .runtime import APP_NAME, APP_VERSION, CURRENT_SCHEMA_VERSION, DEVELOPER, backup_database, configure_logging, database_schema_version, initialize_runtime, open_path
+
+
+def fitted_window_geometry(screen_width: int, screen_height: int, requested_width: int, requested_height: int, center_x: int, center_y: int) -> tuple[int, int, int, int]:
+    """Fit a child window inside the visible screen and keep it centered."""
+    margin_x, margin_top, margin_bottom = 24, 48, 72
+    maximum_width=max(320,screen_width-margin_x*2);maximum_height=max(280,screen_height-margin_top-margin_bottom)
+    width=min(max(480,requested_width),maximum_width);height=min(max(360,requested_height),maximum_height)
+    x=max(margin_x,min(center_x-width//2,screen_width-width-margin_x))
+    y=max(margin_top,min(center_y-height//2,screen_height-height-margin_bottom))
+    return width,height,x,y
 
 
 def validate_scope_values(institution: str, regime: str, quarter: str, year: str):
@@ -45,6 +57,8 @@ class PayrollApp(tk.Tk):
         else:
             for folder in [Path(self.config_data.database_path).parent,Path(self.config_data.results_dir),Path(self.config_data.backups_dir),Path(self.config_data.logs_dir)]:folder.mkdir(parents=True,exist_ok=True)
             configure_logging(Path(self.config_data.logs_dir)/"sicorpa.log")
+        self.trial_manager=TrialManager(Path(self.config_data.database_path).parent);self.trial_status=self.trial_manager.check()
+        logging.info("État de la version d’essai : %s — %s",self.trial_status.code,self.trial_status.message)
         current_schema=database_schema_version(Path(self.config_data.database_path))
         pre_migration_backup=backup_database(Path(self.config_data.database_path),Path(self.config_data.backups_dir),"avant_migration") if current_schema<CURRENT_SCHEMA_VERSION else None
         if pre_migration_backup:logging.info("Sauvegarde avant migration du schéma %s vers %s : %s",current_schema,CURRENT_SCHEMA_VERSION,pre_migration_backup)
@@ -61,13 +75,16 @@ class PayrollApp(tk.Tk):
         self.generation_window = None
         self.title(f"{APP_NAME} {APP_VERSION} — Contrôle et rapprochement de la paie")
         self.geometry("1280x820")
-        self.minsize(1050, 700)
+        screen_width=self.winfo_screenwidth();screen_height=self.winfo_screenheight()
+        self.minsize(min(1000,max(760,screen_width-120)),min(680,max(560,screen_height-160)))
         self.configure(background="#F3F6FA")
         self.after_idle(self._center_main_window)
+        self.after(120,self._maximize_main_window)
         self._build_style()
         self._build_menu()
         self._build_ui()
         self.after(100, self._poll_events)
+        self.after(700,self._notify_trial_status)
 
 
     def _sync_regimes_from_database(self):
@@ -83,14 +100,42 @@ class PayrollApp(tk.Tk):
         }
 
     def _center_main_window(self):
-        self.update_idletasks();width=self.winfo_width() or 1280;height=self.winfo_height() or 820
-        x=max(0,(self.winfo_screenwidth()-width)//2);y=max(0,(self.winfo_screenheight()-height)//2)
-        self.geometry(f"{width}x{height}+{x}+{y}")
+        self.update_idletasks();screen_width=self.winfo_screenwidth();screen_height=self.winfo_screenheight()
+        current_width=self.winfo_width();current_height=self.winfo_height()
+        width=min(current_width if current_width>1 else 1280,max(760,screen_width-48));height=min(current_height if current_height>1 else 820,max(560,screen_height-96))
+        self.geometry(f"{width}x{height}+{max(0,(screen_width-width)//2)}+{max(0,(screen_height-height)//2)}")
 
-    def _center_child_window(self,window):
-        window.update_idletasks();width=window.winfo_width();height=window.winfo_height()
-        x=self.winfo_rootx()+max(0,(self.winfo_width()-width)//2);y=self.winfo_rooty()+max(0,(self.winfo_height()-height)//2)
-        window.geometry(f"{width}x{height}+{x}+{y}")
+    def _maximize_main_window(self):
+        """Use the operating system maximized mode, with a centered safe fallback."""
+        self._center_main_window();self.update_idletasks()
+        try:
+            if platform.system()=="Windows":self.state("zoomed")
+            else:self.attributes("-zoomed",True)
+        except tk.TclError:
+            screen_width=self.winfo_screenwidth();screen_height=self.winfo_screenheight()
+            self.geometry(f"{max(760,screen_width)}x{max(560,screen_height-48)}+0+0")
+
+    def _center_child_window(self,window,preferred_width=None,preferred_height=None):
+        window.update_idletasks();requested_width=max(preferred_width or 0,window.winfo_width(),window.winfo_reqwidth());requested_height=max(preferred_height or 0,window.winfo_height(),window.winfo_reqheight())
+        center_x=self.winfo_rootx()+self.winfo_width()//2;center_y=self.winfo_rooty()+self.winfo_height()//2
+        width,height,x,y=fitted_window_geometry(window.winfo_screenwidth(),window.winfo_screenheight(),requested_width,requested_height,center_x,center_y)
+        window.geometry(f"{width}x{height}+{x}+{y}");window.minsize(min(520,width),min(360,height));window.resizable(True,True)
+        window.lift();window.focus_set()
+
+    def _scrollable_dialog_body(self,window,padding=20):
+        host=ttk.Frame(window);host.pack(fill="both",expand=True)
+        canvas=tk.Canvas(host,background="#F3F6FA",highlightthickness=0)
+        scrollbar=ttk.Scrollbar(host,orient="vertical",command=canvas.yview);canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right",fill="y");canvas.pack(side="left",fill="both",expand=True)
+        body=ttk.Frame(canvas,padding=padding);body_id=canvas.create_window((0,0),window=body,anchor="nw")
+        body.bind("<Configure>",lambda _event:canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",lambda event:canvas.itemconfigure(body_id,width=event.width))
+        def wheel(event):
+            delta=-1 if event.delta>0 else 1
+            canvas.yview_scroll(delta,"units")
+        canvas.bind("<Enter>",lambda _event:canvas.bind_all("<MouseWheel>",wheel))
+        canvas.bind("<Leave>",lambda _event:canvas.unbind_all("<MouseWheel>"))
+        return body
 
     def _build_style(self):
         style = ttk.Style(self)
@@ -120,7 +165,106 @@ class PayrollApp(tk.Tk):
         file_menu.add_command(label="Ouvrir le dossier des sauvegardes",command=lambda:self._open_runtime_path(Path(self.config_data.backups_dir)))
         file_menu.add_separator();file_menu.add_command(label="Sauvegarder la base",command=self._manual_backup)
         file_menu.add_separator();file_menu.add_command(label="Quitter",command=self.destroy);menu.add_cascade(label="Fichier",menu=file_menu)
-        help_menu=tk.Menu(menu,tearoff=False);help_menu.add_command(label="Mode d’emploi",command=self._show_user_guide);help_menu.add_command(label="Diagnostic",command=self._show_diagnostic);help_menu.add_separator();help_menu.add_command(label="À propos de SICORPA",command=self._show_about);menu.add_cascade(label="Aide",menu=help_menu);self.configure(menu=menu)
+        tools_menu=tk.Menu(menu,tearoff=False)
+        tools_menu.add_command(label="Faire pivoter un PDF…",command=lambda:self._show_file_tool("ROTATE"))
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Convertir un PDF en Excel…",command=lambda:self._show_file_tool("EXCEL"))
+        tools_menu.add_command(label="Convertir un PDF en Word…",command=lambda:self._show_file_tool("WORD"))
+        menu.add_cascade(label="Outils fichiers",menu=tools_menu)
+        help_menu=tk.Menu(menu,tearoff=False);help_menu.add_command(label="Mode d’emploi",command=self._show_user_guide);help_menu.add_command(label="État de la version d’essai",command=self._show_trial_status);help_menu.add_command(label="Diagnostic",command=self._show_diagnostic);help_menu.add_separator();help_menu.add_command(label="À propos de SICORPA",command=self._show_about);menu.add_cascade(label="Aide",menu=help_menu);self.configure(menu=menu)
+
+
+    def _refresh_trial_status(self):
+        self.trial_status=self.trial_manager.check()
+        if hasattr(self,"trial_indicator"):self.trial_indicator.set(self.trial_status.short_label)
+        return self.trial_status
+
+    def _trial_date(self,value):
+        return value.astimezone().strftime("%d/%m/%Y à %H:%M") if value else "Non disponible"
+
+    def _show_trial_status(self):
+        status=self._refresh_trial_status()
+        content=f"""VERSION D’ESSAI SICORPA
+
+État : {status.short_label}
+Durée configurée : {status.days_total} jours
+Premier lancement : {self._trial_date(status.first_run)}
+Dernier lancement enregistré : {self._trial_date(status.last_run)}
+Expiration : {self._trial_date(status.expires_at)}
+Identifiant de construction : {status.build_id}
+
+{status.message}
+
+Après expiration, la consultation et l’export des données existantes restent disponibles. Les nouveaux imports, rapprochements, rapports et traitements de fichiers sont bloqués."""
+        self._text_dialog("État de la version d’essai",content,"760x600")
+
+    def _notify_trial_status(self):
+        status=self._refresh_trial_status()
+        if status.code==EXPIRING:messagebox.showwarning("Version d’essai",status.message+f"\n\nIl reste {status.days_remaining} jour(s).")
+        elif status.code in {EXPIRED,CLOCK_ROLLBACK,INVALID}:messagebox.showerror("Version d’essai",status.message+"\n\nLes données existantes restent consultables.")
+
+    def _require_active_trial(self,action="ce traitement"):
+        status=self._refresh_trial_status()
+        if status.allowed:return True
+        messagebox.showerror("Traitement indisponible",f"Impossible de lancer {action}.\n\n{status.message}\n\nConsultez Aide > État de la version d’essai.")
+        return False
+
+    def _show_file_tool(self, operation: str):
+        labels={"ROTATE":("Faire pivoter un PDF","Créez une copie du PDF dont toutes les pages sont orientées selon l’angle choisi."),"EXCEL":("Convertir un PDF en Excel","Extrayez les tableaux détectés, ou le texte page par page, dans un classeur structuré."),"WORD":("Convertir un PDF en Word","Extrayez le texte et les tableaux dans un document Word modifiable.")}
+        title,hint=labels[operation];window=tk.Toplevel(self);window.title(f"{title} — SICORPA");window.geometry("760x480");window.minsize(680,440);window.transient(self)
+        header=tk.Frame(window,background="#12355B",padx=22,pady=17);header.pack(fill="x")
+        tk.Label(header,text=title,background="#12355B",foreground="white",font=("DejaVu Sans",16,"bold")).pack(anchor="w")
+        tk.Label(header,text=hint,background="#12355B",foreground="#CFE2F3",wraplength=690,justify="left").pack(anchor="w",pady=(4,0))
+        body=self._scrollable_dialog_body(window,padding=22)
+        source=tk.StringVar();target=tk.StringVar();degrees=tk.StringVar(value="90");ocr_enabled=tk.BooleanVar(value=True);ocr_language=tk.StringVar(value="fra+eng — Français + anglais")
+        ttk.Label(body,text="Fichier PDF source").grid(row=0,column=0,columnspan=2,sticky="w")
+        ttk.Entry(body,textvariable=source).grid(row=1,column=0,sticky="ew",pady=(4,14));ttk.Button(body,text="Parcourir…",command=lambda:self._choose_pdf_source(source,target,operation)).grid(row=1,column=1,padx=(8,0),pady=(4,14))
+        ttk.Label(body,text="Fichier de destination").grid(row=2,column=0,columnspan=2,sticky="w")
+        ttk.Entry(body,textvariable=target).grid(row=3,column=0,sticky="ew",pady=(4,14));ttk.Button(body,text="Choisir…",command=lambda:self._choose_file_tool_target(target,operation)).grid(row=3,column=1,padx=(8,0),pady=(4,14))
+        if operation=="ROTATE":
+            angle=ttk.LabelFrame(body,text="Angle de rotation vers la droite",style="Section.TLabelframe",padding=10);angle.grid(row=4,column=0,columnspan=2,sticky="ew",pady=(0,12))
+            for value in ("90","180","270"):ttk.Radiobutton(angle,text=f"{value}°",variable=degrees,value=value).pack(side="left",padx=14)
+        else:
+            ocr_box=ttk.LabelFrame(body,text="Reconnaissance des pages scannées",style="Section.TLabelframe",padding=10);ocr_box.grid(row=4,column=0,columnspan=2,sticky="ew",pady=(0,12))
+            ttk.Checkbutton(ocr_box,text="Activer automatiquement l’OCR si une page ne contient pas de texte",variable=ocr_enabled).pack(anchor="w")
+            language_row=ttk.Frame(ocr_box);language_row.pack(fill="x",pady=(8,0));ttk.Label(language_row,text="Langue").pack(side="left")
+            ttk.Combobox(language_row,textvariable=ocr_language,state="readonly",values=["fra+eng — Français + anglais","fra — Français","eng — Anglais"],width=31).pack(side="left",padx=(10,0))
+            status="Tesseract détecté : OCR disponible" if ocr_available() else "Tesseract absent : installez-le pour les PDF scannés"
+            ttk.Label(ocr_box,text=status,style="PageHint.TLabel").pack(anchor="w",pady=(7,0))
+        actions=ttk.Frame(window,padding=(22,8,22,18));actions.pack(fill="x")
+        ttk.Button(actions,text="Lancer le traitement",style="Primary.TButton",command=lambda:self._run_file_tool(window,operation,source.get(),target.get(),degrees.get(),ocr_enabled.get(),ocr_language.get().split(" ",1)[0])).pack(side="right",padx=4)
+        ttk.Button(actions,text="Annuler",style="Secondary.TButton",command=window.destroy).pack(side="right",padx=4)
+        body.columnconfigure(0,weight=1);window.after_idle(lambda:self._center_child_window(window,760,480))
+
+    def _choose_pdf_source(self,source,target,operation):
+        path=filedialog.askopenfilename(title="Choisir le PDF",filetypes=[("Document PDF","*.pdf")])
+        if not path:return
+        source.set(path)
+        if not target.get().strip():
+            suffix={"ROTATE":"_rotation.pdf","EXCEL":"_converti.xlsx","WORD":"_converti.docx"}[operation]
+            target.set(str(Path(path).with_name(f"{Path(path).stem}{suffix}")))
+
+    def _choose_file_tool_target(self,target,operation):
+        extension={"ROTATE":".pdf","EXCEL":".xlsx","WORD":".docx"}[operation]
+        types={"ROTATE":[("Document PDF","*.pdf")],"EXCEL":[("Classeur Excel","*.xlsx")],"WORD":[("Document Word","*.docx")]}[operation]
+        path=filedialog.asksaveasfilename(title="Choisir la destination",defaultextension=extension,filetypes=types,initialfile=Path(target.get()).name if target.get() else None)
+        if path:target.set(path)
+
+    def _run_file_tool(self,window,operation,source,target,degrees,use_ocr=True,ocr_language="fra+eng"):
+        if not self._require_active_trial("le traitement de ce fichier"):return
+        if self.busy:messagebox.showwarning("Traitement en cours","Attendez la fin du traitement actuel avant d’en lancer un autre.",parent=window);return
+        if not source.strip() or not target.strip():messagebox.showwarning("Fichiers incomplets","Sélectionnez le PDF source et le fichier de destination.",parent=window);return
+        window.destroy();title={"ROTATE":"Rotation du PDF","EXCEL":"Conversion du PDF en Excel","WORD":"Conversion du PDF en Word"}[operation]
+        self._open_generation_dialog(title,"Le fichier est traité page par page. Vous pouvez suivre sa progression ci-dessous.")
+        tasks={"ROTATE":lambda:rotate_pdf(source,target,int(degrees),self._progress),"EXCEL":lambda:pdf_to_excel(source,target,self._progress,use_ocr,ocr_language),"WORD":lambda:pdf_to_word(source,target,self._progress,use_ocr,ocr_language)}
+        self._background(tasks[operation],self._file_tool_completed)
+
+    def _file_tool_completed(self,path):
+        if self.generation_window and self.generation_window.winfo_exists():
+            self.generation_title.set("Traitement terminé avec succès");self.generation_status.set(f"Fichier créé : {path}");self.generation_bar["value"]=100
+            if not self.generated_files.get(0,"end"):self.generated_files.insert("end",f"✓  {Path(path).name}")
+            self.generation_close.configure(state="normal")
+        messagebox.showinfo("Outil fichiers",f"Le fichier a été généré :\n{path}")
 
     def _open_runtime_path(self,path: Path):
         try:open_path(path)
@@ -137,7 +281,8 @@ class PayrollApp(tk.Tk):
         header=tk.Frame(window,background="#12355B",padx=20,pady=14);header.pack(fill="x");tk.Label(header,text=title,background="#12355B",foreground="white",font=("DejaVu Sans",15,"bold")).pack(anchor="w")
         body=ttk.Frame(window,padding=16);body.pack(fill="both",expand=True);scroll=ttk.Scrollbar(body);scroll.pack(side="right",fill="y")
         text=tk.Text(body,wrap="word",yscrollcommand=scroll.set,font=("DejaVu Sans",10),background="white",foreground="#243247",padx=14,pady=14,relief="solid",borderwidth=1);text.pack(side="left",fill="both",expand=True);scroll.configure(command=text.yview);text.insert("1.0",content);text.configure(state="disabled")
-        ttk.Button(window,text="Fermer",style="Primary.TButton",command=window.destroy).pack(anchor="e",padx=16,pady=(0,14));window.after_idle(lambda:self._center_child_window(window));return window
+        ttk.Button(window,text="Fermer",style="Primary.TButton",command=window.destroy).pack(anchor="e",padx=16,pady=(0,14))
+        preferred_width,preferred_height=(int(value) for value in geometry.split("x",1));window.after_idle(lambda:self._center_child_window(window,preferred_width,preferred_height));return window
 
     def _show_user_guide(self):self._text_dialog("Mode d’emploi de SICORPA",USER_GUIDE)
 
@@ -178,6 +323,8 @@ Interface : Python / Tkinter"""
                 drivers=[driver for driver in pyodbc.drivers() if "Access" in driver];add("Lecture Access",bool(drivers),", ".join(drivers) or "Pilote Microsoft Access absent")
             except Exception as exc:add("Lecture Access",False,str(exc))
         else:add("Lecture Access",bool(shutil.which("mdb-tables") and shutil.which("mdb-export")),"mdbtools installé" if shutil.which("mdb-tables") else "Installez mdbtools")
+        add("OCR des PDF scannés",ocr_available(),str(tesseract_path()) if ocr_available() else "Installez Tesseract OCR et la langue française")
+        trial=self._refresh_trial_status();add("Version d’essai",trial.allowed,trial.short_label+" — "+trial.message)
         add("Espace disque",shutil.disk_usage(database.parent).free>500*1024*1024,f"{shutil.disk_usage(database.parent).free/(1024**3):.1f} Go libres")
         return f"DIAGNOSTIC SICORPA {APP_VERSION}\nSystème : {platform.system()} {platform.release()}\n\n"+"\n\n".join(checks)
 
@@ -188,11 +335,13 @@ Interface : Python / Tkinter"""
         identity = tk.Frame(header, background="#12355B"); identity.pack(side="left")
         ttk.Label(identity, text="SICORPA", style="Title.TLabel").pack(anchor="w")
         ttk.Label(identity, text="Système Intégré de Contrôle et de Rapprochement de la Paie", style="Subtitle.TLabel").pack(anchor="w")
+        self.trial_indicator=tk.StringVar(value=self.trial_status.short_label)
+        tk.Label(header,textvariable=self.trial_indicator,background="#8A4B08",foreground="white",font=("DejaVu Sans",9,"bold"),padx=12,pady=8).pack(side="right",padx=(8,0))
         tk.Label(header, text=f"●  DuckDB connecté  •  v{APP_VERSION}\n{self.config_data.database_path}", background="#0D2947", foreground="#D7E9FA", padx=14, pady=8).pack(side="right")
         self.notebook = ttk.Notebook(self); self.notebook.pack(fill="both", expand=True, padx=22, pady=(18,10))
-        self.dashboard_page=ttk.Frame(self.notebook,padding=20);self.access_page=ttk.Frame(self.notebook,padding=20);self.excel_page=ttk.Frame(self.notebook,padding=20);self.match_page=ttk.Frame(self.notebook,padding=20);self.explorer_page=ttk.Frame(self.notebook,padding=20);self.admin_page=ttk.Frame(self.notebook,padding=20);self.mapping_page=ttk.Frame(self.notebook,padding=20)
-        for page,label in [(self.dashboard_page,"  Tableau de bord  "),(self.access_page,"  1. Paie Access  "),(self.excel_page,"  2. Déclaratif Excel  "),(self.match_page,"  3. Rapprochement  "),(self.explorer_page,"  Explorer les données  "),(self.admin_page,"  Configuration  "),(self.mapping_page,"  Mapping colonnes  ")]:self.notebook.add(page,text=label)
-        self._build_dashboard();self._build_access();self._build_excel();self._build_matching();self._build_explorer();self._build_admin();self._build_mapping()
+        self.dashboard_page=ttk.Frame(self.notebook,padding=20);self.access_page=ttk.Frame(self.notebook,padding=20);self.excel_page=ttk.Frame(self.notebook,padding=20);self.match_page=ttk.Frame(self.notebook,padding=20);self.explorer_page=ttk.Frame(self.notebook,padding=20);self.admin_page=ttk.Frame(self.notebook,padding=20);self.mapping_page=ttk.Frame(self.notebook,padding=20);self.finance_page=ttk.Frame(self.notebook,padding=20)
+        for page,label in [(self.dashboard_page,"  Tableau de bord  "),(self.access_page,"  1. Paie Access  "),(self.excel_page,"  2. Déclaratif Excel  "),(self.match_page,"  3. Rapprochement  "),(self.explorer_page,"  Explorer les données  "),(self.admin_page,"  Configuration  "),(self.mapping_page,"  Mapping colonnes  "),(self.finance_page,"  Calculs financiers  ")]:self.notebook.add(page,text=label)
+        self._build_dashboard();self._build_access();self._build_excel();self._build_matching();self._build_explorer();self._build_admin();self._build_mapping();self._build_finance()
         footer=ttk.Frame(self,padding=(22,7,22,14));footer.pack(fill="x")
         self.progress=ttk.Progressbar(footer,maximum=100);self.progress.pack(side="left",fill="x",expand=True)
         self.status=tk.StringVar(value="Prêt");ttk.Label(footer,textvariable=self.status,width=42).pack(side="left",padx=12)
@@ -207,7 +356,7 @@ Interface : Python / Tkinter"""
         self._page_heading(self.dashboard_page,"Tableau de bord","Vue d’ensemble de l’entrepôt analytique et accès rapide au traitement trimestriel.")
         choice=ttk.LabelFrame(self.dashboard_page,text="Quel traitement souhaitez-vous effectuer ?",style="Section.TLabelframe",padding=16);choice.pack(fill="x",pady=(0,16))
         self.treatment_choice=tk.StringVar(value="Traitement complet : paie + déclaratif + rapprochement + rapport")
-        options=["Charger uniquement une table de paie Access","Charger uniquement un déclaratif Excel","Lancer un rapprochement existant","Générer uniquement le rapport et les annexes","Traitement complet : paie + déclaratif + rapprochement + rapport"]
+        options=["Charger uniquement une table de paie Access","Charger uniquement un déclaratif Excel","Lancer un rapprochement existant","Générer le rapport, la lettre et les annexes","Traitement complet : paie + déclaratif + rapprochement + rapport"]
         ttk.Combobox(choice,textvariable=self.treatment_choice,state="readonly",values=options,width=70).pack(side="left",fill="x",expand=True,padx=(0,10))
         ttk.Button(choice,text="Commencer",style="Primary.TButton",command=self._start_selected_treatment).pack(side="right")
         dashboard_filters=ttk.LabelFrame(self.dashboard_page,text="Filtres du tableau de bord",style="Section.TLabelframe",padding=12);dashboard_filters.pack(fill="x",pady=(0,14))
@@ -240,7 +389,7 @@ Interface : Python / Tkinter"""
         if choice.startswith("Charger uniquement une table"):self.notebook.select(1)
         elif choice.startswith("Charger uniquement un déclaratif"):self.notebook.select(2)
         elif choice.startswith("Lancer un rapprochement"):self.notebook.select(3)
-        elif choice.startswith("Générer uniquement"):self.notebook.select(3);messagebox.showinfo("Rapport","Sélectionnez le périmètre puis cliquez sur Générer le rapport final et les annexes.")
+        elif choice.startswith("Générer uniquement"):self.notebook.select(3);messagebox.showinfo("Rapport","Sélectionnez le périmètre puis cliquez sur Générer le rapport, la lettre et les annexes.")
         else:self.notebook.select(1);messagebox.showinfo("Traitement complet","Étape 1/4 : chargez la table de paie. Poursuivez ensuite avec les onglets numérotés.")
 
     def _dashboard_conditions(self):
@@ -348,7 +497,7 @@ Interface : Python / Tkinter"""
         ttk.Label(info,text="Les filtres sont combinés avec ET. NU / N.U est traité comme matricule non exploitable et exclu des doublons.").pack(anchor="w")
         buttons=ttk.Frame(self.match_page);buttons.pack(fill="x",pady=10)
         self.match_button=ttk.Button(buttons,text="Lancer le rapprochement",style="Primary.TButton",command=self._run_matching);self.match_button.pack(side="right",padx=5)
-        ttk.Button(buttons,text="Générer le rapport final et les annexes",style="Secondary.TButton",command=self._export_report).pack(side="right",padx=5)
+        ttk.Button(buttons,text="Générer le rapport, la lettre et les annexes",style="Secondary.TButton",command=self._export_report).pack(side="right",padx=5)
 
     def _build_admin(self):
         self._page_heading(self.admin_page,"Configuration métier","Gérez les institutions et ajoutez des régimes sans modifier le code.")
@@ -479,7 +628,7 @@ Interface : Python / Tkinter"""
         self._page_heading(self.mapping_page,"Mapping des colonnes","Associez les colonnes propres à chaque régime au schéma analytique standard.")
         panel=ttk.LabelFrame(self.mapping_page,text="Nouvelle correspondance",style="Section.TLabelframe",padding=14);panel.pack(fill="x",pady=(0,12))
         self.map_regime=tk.StringVar();self.map_source_type=tk.StringVar(value="ACCESS");self.map_source_column=tk.StringVar();self.map_target_column=tk.StringVar();self.map_required=tk.BooleanVar(value=False)
-        targets=["matricule_source","nom","prenom","section","categorie","grade","service","unite_affectation","province","remuneration_base","transport","prime","logement","pension_rente","autres_remunerations","retenues","montant_net","remuneration_declaree","statut_agent"]
+        targets=["matricule_source","nom","prenom","section","categorie","grade","service","unite_affectation","province","remuneration_base","transport","prime","logement","pension_rente","autres_remunerations","retenues","montant_net","remuneration_declaree","statut_agent"]+[f"composante_{row[0]}" for row in self.db.list_financial_components() if not row[3]]
         fields=[("Régime",self.map_regime),("Type de source",self.map_source_type),("Colonne dans le fichier",self.map_source_column),("Colonne standard",self.map_target_column)]
         for col,(label,var) in enumerate(fields):
             ttk.Label(panel,text=label).grid(row=0,column=col,sticky="w",padx=5)
@@ -501,6 +650,162 @@ Interface : Python / Tkinter"""
         self.mapping_tree.pack(fill="both",expand=True);self.mapping_tree.bind("<<TreeviewSelect>>",self._select_mapping)
         actions=ttk.Frame(table);actions.pack(fill="x",pady=(8,0));ttk.Button(actions,text="Supprimer la sélection",style="Secondary.TButton",command=self._delete_mapping).pack(side="right")
         self._refresh_mapping_tree()
+
+    def _build_finance(self):
+        self._page_heading(self.finance_page,"Calculs financiers","Configurez les composantes et versionnez les formules d’impact sans saisir de SQL.")
+        catalog=ttk.LabelFrame(self.finance_page,text="Catalogue des composantes",style="Section.TLabelframe",padding=10);catalog.pack(fill="x",pady=(0,10))
+        self.component_code=tk.StringVar();self.component_label=tk.StringVar()
+        ttk.Label(catalog,text="Code technique").grid(row=0,column=0,sticky="w",padx=4);ttk.Label(catalog,text="Libellé").grid(row=0,column=1,sticky="w",padx=4)
+        ttk.Entry(catalog,textvariable=self.component_code).grid(row=1,column=0,sticky="ew",padx=4);ttk.Entry(catalog,textvariable=self.component_label).grid(row=1,column=1,sticky="ew",padx=4)
+        ttk.Button(catalog,text="Ajouter la composante",style="Secondary.TButton",command=self._add_financial_component).grid(row=1,column=2,padx=4);catalog.columnconfigure(1,weight=1)
+        default_box=ttk.LabelFrame(self.finance_page,text="Formule SICORPA par défaut",style="Section.TLabelframe",padding=10);default_box.pack(fill="x",pady=(0,10))
+        default_formula=self.db.default_impact_formula();default_labels={row[0]:row[1] for row in self.db.list_financial_components()}
+        default_expression=" + ".join(default_labels.get(term["code"],term["code"]) for term in default_formula["terms"])
+        self.default_formula_text=tk.StringVar(value=f"{default_expression}  •  Agrégation : toutes les lignes  •  Version système {default_formula['version']}")
+        ttk.Label(default_box,textvariable=self.default_formula_text,style="PageHint.TLabel",wraplength=930).pack(side="left",fill="x",expand=True)
+        ttk.Button(default_box,text="Charger dans le constructeur",style="Secondary.TButton",command=self._load_default_formula).pack(side="right",padx=(8,0))
+        builder=ttk.LabelFrame(self.finance_page,text="Nouvelle version de formule",style="Section.TLabelframe",padding=10);builder.pack(fill="x",pady=(0,10))
+        self.formula_name=tk.StringVar(value="Formule d’impact");self.formula_institution=tk.StringVar(value="Toutes");self.formula_regime=tk.StringVar();self.formula_rubric=tk.StringVar(value="*");self.formula_quarter=tk.StringVar(value="T1");self.formula_year=tk.StringVar(value=str(datetime.now().year));self.formula_aggregation=tk.StringVar(value="TOUTES_LIGNES")
+        fields=[("Nom",self.formula_name),("Institution",self.formula_institution),("Régime",self.formula_regime),("Rubrique",self.formula_rubric),("Début",None),("Agrégation",self.formula_aggregation)]
+        for col,(label,var) in enumerate(fields):
+            ttk.Label(builder,text=label).grid(row=0,column=col,sticky="w",padx=3)
+            if col==0:widget=ttk.Entry(builder,textvariable=var)
+            elif col==1:widget=self.formula_institution_combo=ttk.Combobox(builder,textvariable=var,state="readonly",values=["Toutes"]+[row[2] for row in self.db.list_institutions()])
+            elif col==2:widget=self.formula_regime_combo=ttk.Combobox(builder,textvariable=var,state="readonly",values=list(self.config_data.regimes))
+            elif col==3:widget=ttk.Combobox(builder,textvariable=var,state="readonly",values=self.db.FORMULA_RUBRICS)
+            elif col==4:
+                widget=ttk.Frame(builder);ttk.Combobox(widget,textvariable=self.formula_quarter,state="readonly",values=["T1","T2","T3","T4"],width=4).pack(side="left");ttk.Spinbox(widget,from_=2020,to=2100,textvariable=self.formula_year,width=7).pack(side="left",padx=2)
+            else:widget=ttk.Combobox(builder,textvariable=var,state="readonly",values=self.db.FORMULA_AGGREGATIONS)
+            widget.grid(row=1,column=col,sticky="ew",padx=3);builder.columnconfigure(col,weight=1)
+        terms=ttk.Frame(builder);terms.grid(row=2,column=0,columnspan=6,sticky="ew",pady=(10,4));self.formula_component=tk.StringVar();self.formula_sign=tk.StringVar(value="+");self.formula_coefficient=tk.StringVar(value="1")
+        self.formula_component_combo=ttk.Combobox(terms,textvariable=self.formula_component,state="readonly",values=[row[0] for row in self.db.list_financial_components()],width=28);self.formula_component_combo.pack(side="left",padx=3)
+        ttk.Combobox(terms,textvariable=self.formula_sign,state="readonly",values=["+","−"],width=4).pack(side="left",padx=3);ttk.Entry(terms,textvariable=self.formula_coefficient,width=9).pack(side="left",padx=3)
+        ttk.Button(terms,text="Ajouter le terme",command=self._add_formula_term).pack(side="left",padx=3);ttk.Button(terms,text="Retirer le terme",command=self._remove_formula_term).pack(side="left",padx=3)
+        self.formula_terms=[];self.formula_terms_tree=ttk.Treeview(builder,columns=("component","coefficient"),show="headings",height=4);self.formula_terms_tree.heading("component",text="Composante");self.formula_terms_tree.heading("coefficient",text="Coefficient");self.formula_terms_tree.column("component",width=300);self.formula_terms_tree.column("coefficient",width=120,anchor="center");self.formula_terms_tree.grid(row=3,column=0,columnspan=6,sticky="ew",padx=3)
+        self.formula_preview=tk.StringVar(value="Formule : ajoutez des composantes");ttk.Label(builder,textvariable=self.formula_preview,style="PageHint.TLabel").grid(row=4,column=0,columnspan=4,sticky="w",padx=3,pady=6)
+        ttk.Button(builder,text="Simuler sur le périmètre",style="Secondary.TButton",command=self._simulate_formula).grid(row=4,column=4,padx=3);ttk.Button(builder,text="Enregistrer cette version",style="Primary.TButton",command=self._save_impact_formula).grid(row=4,column=5,padx=3)
+        versions=ttk.LabelFrame(self.finance_page,text="Versions configurées",style="Section.TLabelframe",padding=8);versions.pack(fill="both",expand=True)
+        columns=("nom","portee","regime","rubrique","debut","aggregation","version","actif");self.formula_tree=ttk.Treeview(versions,columns=columns,show="headings",height=7)
+        for column,title,width in [("nom","Nom",170),("portee","Institution",160),("regime","Régime",110),("rubrique","Rubrique",170),("debut","Début",90),("aggregation","Agrégation",190),("version","Version",70),("actif","Actif",60)]:self.formula_tree.heading(column,text=title);self.formula_tree.column(column,width=width,anchor="w")
+        self.formula_tree.pack(fill="both",expand=True);self.formula_tree.bind("<Double-1>",lambda _event:self._view_formula_details())
+        version_actions=ttk.Frame(versions);version_actions.pack(fill="x",pady=(6,0))
+        ttk.Label(version_actions,text="Double-cliquez sur une formule pour afficher sa fiche.",style="PageHint.TLabel").pack(side="left")
+        ttk.Button(version_actions,text="Voir les détails",command=self._view_formula_details).pack(side="right",padx=3)
+        ttk.Button(version_actions,text="Modifier / créer une version",style="Secondary.TButton",command=self._load_selected_formula).pack(side="right",padx=3)
+        ttk.Button(version_actions,text="Activer / désactiver",command=self._toggle_impact_formula).pack(side="right",padx=3);self._refresh_formula_tree()
+
+    def _selected_formula(self):
+        selected=self.formula_tree.selection()
+        if not selected:raise ValueError("Sélectionnez une formule dans la liste.")
+        return self.db.get_impact_formula(selected[0])
+
+    def _formula_expression_text(self,formula):
+        labels={row[0]:row[1] for row in self.db.list_financial_components(active_only=False)};parts=[]
+        for term in formula.get("terms",[]):
+            coefficient=float(term.get("coefficient",0));sign="+" if coefficient>=0 else "−";amount=abs(coefficient);label=labels.get(term.get("code"),term.get("code"))
+            parts.append(f"{sign} {amount:g} × {label}")
+        return " ".join(parts).lstrip("+ ") or "0"
+
+    def _view_formula_details(self):
+        try:formula=self._selected_formula()
+        except ValueError as exc:messagebox.showwarning("Formule",str(exc));return
+        names={row[0]:row[2] for row in self.db.list_institutions()};scope=names.get(formula.get("institution_id"),"Toutes les institutions")
+        status="Système — toujours disponible" if formula.get("system") else ("Active" if formula.get("active") else "Inactive")
+        content=f"""FORMULE D’IMPACT
+
+Nom : {formula['name']}
+Identifiant : {formula['id']}
+Version : {formula['version']}
+Statut : {status}
+Institution : {scope}
+Régime : {formula.get('regime','Tous les régimes')}
+Rubrique : {formula.get('rubric','*')}
+Entrée en vigueur : {formula.get('quarter','T1')} {formula.get('year',2020)}
+Agrégation : {formula.get('aggregation')}
+
+Expression
+{self._formula_expression_text(formula)}
+
+Règle de modification
+Toute modification est enregistrée comme une nouvelle version afin de préserver la traçabilité des anciens traitements."""
+        self._text_dialog(f"Détails — {formula['name']}",content,"760x600")
+
+    def _load_selected_formula(self):
+        try:formula=self._selected_formula()
+        except ValueError as exc:messagebox.showwarning("Formule",str(exc));return
+        if formula.get("system"):
+            self._load_default_formula();return
+        names={row[0]:row[2] for row in self.db.list_institutions()};self.formula_name.set(f"{formula['name']} — modification")
+        self.formula_institution.set(names.get(formula.get("institution_id"),"Toutes"));self.formula_regime.set(formula["regime"]);self.formula_rubric.set(formula["rubric"]);self.formula_quarter.set(formula["quarter"]);self.formula_year.set(str(formula["year"]));self.formula_aggregation.set(formula["aggregation"])
+        self.formula_terms=[dict(term) for term in formula.get("terms",[])];self._refresh_formula_terms()
+        messagebox.showinfo("Modification versionnée",f"La formule {formula['name']} v{formula['version']} est chargée dans le constructeur. L’enregistrement créera une nouvelle version; l’original ne sera pas écrasé.")
+
+    def _load_default_formula(self):
+        formula=self.db.default_impact_formula();self.formula_terms=[dict(term) for term in formula["terms"]]
+        self.formula_name.set("Variante de la formule SICORPA par défaut");self.formula_rubric.set("*");self.formula_aggregation.set(formula["aggregation"]);self._refresh_formula_terms()
+        messagebox.showinfo("Formule par défaut","La formule système a été copiée dans le constructeur. Modifiez les termes, choisissez le périmètre, simulez puis enregistrez une nouvelle version.")
+
+    def _add_financial_component(self):
+        try:self.db.add_financial_component(self.component_code.get(),self.component_label.get())
+        except ValueError as exc:messagebox.showwarning("Composante invalide",str(exc));return
+        self.component_code.set("");self.component_label.set("");self._refresh_financial_components();messagebox.showinfo("Composante","La composante est disponible dans les formules et le mapping Access.")
+
+    def _refresh_financial_components(self):
+        codes=[row[0] for row in self.db.list_financial_components()]
+        self.formula_component_combo["values"]=codes
+        if hasattr(self,"map_target_combo"):
+            base=[value for value in self.map_target_combo["values"] if not str(value).startswith("composante_")];self.map_target_combo["values"]=base+[f"composante_{row[0]}" for row in self.db.list_financial_components() if not row[3]]
+
+    def _add_formula_term(self):
+        try:coefficient=float(self.formula_coefficient.get().replace(",","."))
+        except ValueError:messagebox.showwarning("Coefficient","Saisissez un nombre valide.");return
+        if not self.formula_component.get():messagebox.showwarning("Composante","Sélectionnez une composante.");return
+        coefficient=coefficient*(-1 if self.formula_sign.get()=="−" else 1);self.formula_terms.append({"code":self.formula_component.get(),"coefficient":coefficient});self._refresh_formula_terms()
+
+    def _remove_formula_term(self):
+        selected=self.formula_terms_tree.selection()
+        if selected:self.formula_terms.pop(int(selected[0]));self._refresh_formula_terms()
+
+    def _refresh_formula_terms(self):
+        self.formula_terms_tree.delete(*self.formula_terms_tree.get_children())
+        for index,term in enumerate(self.formula_terms):self.formula_terms_tree.insert("","end",iid=str(index),values=(term["code"],f'{term["coefficient"]:g}'))
+        expression=" + ".join(f'{term["coefficient"]:g} × {term["code"]}' for term in self.formula_terms) or "0";self.formula_preview.set(f"Formule : {expression} — {self.formula_aggregation.get()}")
+
+    def _formula_scope_values(self):
+        institution=self.formula_institution.get();institution_id="" if institution=="Toutes" else self.institution_ids_by_name.get(institution,"")
+        if institution!="Toutes" and not institution_id:raise ValueError("Institution inconnue.")
+        if not self.formula_regime.get():raise ValueError("Sélectionnez le régime.")
+        return institution_id,self.formula_regime.get(),self.formula_quarter.get(),int(self.formula_year.get())
+
+    def _save_impact_formula(self):
+        try:
+            institution_id,regime,quarter,year=self._formula_scope_values();self.db.save_impact_formula(self.formula_name.get(),institution_id,regime,self.formula_rubric.get(),quarter,year,self.formula_aggregation.get(),self.formula_terms)
+        except (ValueError,TypeError) as exc:messagebox.showwarning("Formule invalide",str(exc));return
+        self.formula_terms=[];self._refresh_formula_terms();self._refresh_formula_tree();messagebox.showinfo("Formule","Nouvelle version enregistrée. Les anciens résultats conservent leur formule d’origine.")
+
+    def _simulate_formula(self):
+        try:
+            institution_id,regime,quarter,year=self._formula_scope_values()
+            if not institution_id:raise ValueError("Choisissez une institution pour la simulation.")
+            key="matricule_normalise" if "MATRICULE" in self.formula_rubric.get() else "nom_normalise";rank=f"ROW_NUMBER() OVER(PARTITION BY p.{key} ORDER BY p.ligne_source)"
+            expression=self.db.formula_terms_sql(self.formula_terms,self.formula_aggregation.get(),"p",rank)
+            with self.db.connect() as con:row=con.execute(f"SELECT COUNT(*),COALESCE(SUM(impact_simule),0),COALESCE(AVG(impact_simule),0) FROM (SELECT {expression} impact_simule FROM paie_standardisee p WHERE institution_id=? AND regime=? AND trimestre=? AND annee=?) simulation",[institution_id,regime,quarter,year]).fetchone()
+            messagebox.showinfo("Simulation de la formule en construction",f"Lignes testées : {row[0]:,}\nImpact total : {row[1]:,.2f}\nImpact moyen : {row[2]:,.2f}\n\nAucune donnée n’a été modifiée.".replace(","," "))
+        except Exception as exc:messagebox.showwarning("Simulation impossible",str(exc))
+
+    def _refresh_formula_tree(self):
+        if not hasattr(self,"formula_tree"):return
+        self.formula_tree.delete(*self.formula_tree.get_children())
+        default=self.db.default_impact_formula();self.formula_tree.insert("","end",iid="FORMULE_DEFAUT",values=(default["name"],"Toutes",default["regime"],default["rubric"],f'{default["quarter"]} {default["year"]}',default["aggregation"],default["version"],"Système"),tags=("system",))
+        names={row[0]:row[2] for row in self.db.list_institutions()}
+        for row in self.db.list_impact_formulas():
+            fid,name,iid,regime,rubric,quarter,year,aggregation,_terms,version,active=row;self.formula_tree.insert("","end",iid=fid,values=(name,names.get(iid,"Toutes"),regime,rubric,f"{quarter} {year}",aggregation,version,"Oui" if active else "Non"))
+
+    def _toggle_impact_formula(self):
+        selected=self.formula_tree.selection()
+        if not selected:return
+        if selected[0]=="FORMULE_DEFAUT":messagebox.showinfo("Formule système","La formule par défaut garantit le fonctionnement lorsqu’aucune formule personnalisée ne s’applique. Elle ne peut pas être désactivée; créez une version prioritaire pour la remplacer sur un périmètre.");return
+        active=self.formula_tree.item(selected[0],"values")[-1]=="Oui";self.db.set_impact_formula_active(selected[0],not active);self._refresh_formula_tree()
 
     def _refresh_mapping_tree(self):
         if not hasattr(self,"mapping_tree"):return
@@ -531,6 +836,8 @@ Interface : Python / Tkinter"""
 
     def _refresh_all_institutions(self):
         for scope in [self.access_scope,self.excel_scope,self.match_scope]: self._refresh_institution_combo(scope["institution_combo"])
+        if hasattr(self,"formula_institution_combo"):
+            names=[row[2] for row in self.db.list_institutions()];self.formula_institution_combo["values"]=["Toutes"]+names
         if hasattr(self,"dashboard_institution_combo"):
             names=[row[2] for row in self.db.list_institutions()];self.dashboard_institution_combo["values"]=["Toutes"]+names
             if self.dashboard_institution.get() not in names:self.dashboard_institution.set("Toutes")
@@ -543,6 +850,8 @@ Interface : Python / Tkinter"""
         if hasattr(self,"map_regime_combo"):
             self.map_regime_combo["values"]=values
             if self.map_regime.get() not in values:self.map_regime.set("")
+        if hasattr(self,"formula_regime_combo"):
+            self.formula_regime_combo["values"]=values
         if hasattr(self,"dashboard_regime_combo"):
             self.dashboard_regime_combo["values"]=["Tous"]+values
             if self.dashboard_regime.get() not in values:self.dashboard_regime.set("Tous")
@@ -588,12 +897,14 @@ Interface : Python / Tkinter"""
         except ValueError as exc:
             messagebox.showwarning("Périmètre incomplet",str(exc));return None
     def _load_access(self):
+        if not self._require_active_trial("l’importation Access"):return
         args=self._validated_scope(self.access_scope)
         if args is None:return
         if not self.access_path.get().strip() or not self.access_table.get().strip():
             messagebox.showwarning("Source incomplète","Sélectionnez une base Access et une table.");return
         self._background(lambda:self.ingestion.load_access(self.access_path.get(),self.access_table.get(),*args,progress=self._progress),lambda _:messagebox.showinfo("Terminé","Table Access chargée"))
     def _load_excel(self):
+        if not self._require_active_trial("l’importation Excel"):return
         args=self._validated_scope(self.excel_scope)
         if args is None:return
         if not self.excel_path.get().strip() or not self.excel_sheet.get().strip():
@@ -642,12 +953,13 @@ Interface : Python / Tkinter"""
         except ValueError as exc:messagebox.showwarning("Périmètre incomplet",str(exc))
 
     def _run_matching(self):
+        if not self._require_active_trial("le rapprochement"):return
         args=self._validated_scope(self.match_scope)
         if args is None:return
         self._background(lambda:self.matching.run(*args,progress=self._progress),lambda run_id:self._matching_completed(run_id,args))
     def _matching_completed(self,run_id,args):
-        self.status.set("Génération automatique du rapport et des annexes…")
-        self._open_generation_dialog("Génération du rapport final et des annexes")
+        self.status.set("Génération automatique du rapport, de la lettre et des annexes…")
+        self._open_generation_dialog("Génération du rapport, de la lettre et des annexes")
         self._background(lambda:self.reports.generate_package(str(self.config_data.results_dir),*args,progress=self._progress),self._package_completed)
     def _package_completed(self,path):
         if self.generation_window and self.generation_window.winfo_exists():
@@ -655,23 +967,24 @@ Interface : Python / Tkinter"""
             self.generation_status.set(f"Dossier créé : {path}")
             self.generation_bar["value"]=100
             self.generation_close.configure(state="normal")
-        messagebox.showinfo("Traitement terminé",f"Le rapprochement, le rapport final et les annexes ont été générés dans :\n{path}")
+        messagebox.showinfo("Traitement terminé",f"Le rapprochement, le rapport final, la lettre d’interprétation et les annexes ont été générés dans :\n{path}")
     def _export_report(self):
+        if not self._require_active_trial("la génération du rapport"):return
         args=self._validated_scope(self.match_scope)
         if args is None:return
         folder=filedialog.askdirectory(title="Choisir le dossier des résultats")
         if folder:
-            self._open_generation_dialog("Génération du rapport final et des annexes")
+            self._open_generation_dialog("Génération du rapport, de la lettre et des annexes")
             self._background(lambda:self.reports.generate_package(folder,*args,progress=self._progress),self._package_completed)
     def _add_institution(self):
         if not self.inst_code.get().strip() or not self.inst_name.get().strip(): return
         self.db.add_institution(self.inst_code.get().strip().upper(),self.inst_name.get().strip()); self._refresh_all_institutions(); self._refresh_dashboard(); self.inst_code.set("");self.inst_name.set("")
-    def _open_generation_dialog(self,title):
+    def _open_generation_dialog(self,title,description="Ne fermez pas l’application pendant l’écriture des fichiers Excel et Word."):
         if self.generation_window and self.generation_window.winfo_exists():self.generation_window.destroy()
         window=self.generation_window=tk.Toplevel(self);window.title(title);window.geometry("720x460");window.minsize(620,380);window.transient(self)
         header=tk.Frame(window,background="#12355B",padx=20,pady=16);header.pack(fill="x")
         self.generation_title=tk.StringVar(value=title);tk.Label(header,textvariable=self.generation_title,background="#12355B",foreground="white",font=("DejaVu Sans",15,"bold")).pack(anchor="w")
-        tk.Label(header,text="Ne fermez pas l’application pendant l’écriture des fichiers Excel.",background="#12355B",foreground="#CFE2F3").pack(anchor="w",pady=(3,0))
+        tk.Label(header,text=description,background="#12355B",foreground="#CFE2F3",wraplength=660,justify="left").pack(anchor="w",pady=(3,0))
         body=ttk.Frame(window,padding=20);body.pack(fill="both",expand=True)
         self.generation_status=tk.StringVar(value="Initialisation…");ttk.Label(body,textvariable=self.generation_status,style="PageHint.TLabel").pack(anchor="w",pady=(0,8))
         self.generation_bar=ttk.Progressbar(body,maximum=100);self.generation_bar.pack(fill="x",pady=(0,15))
@@ -680,7 +993,7 @@ Interface : Python / Tkinter"""
         self.generated_files=tk.Listbox(list_frame,bg="white",fg="#243247",font=("DejaVu Sans",10),relief="solid",borderwidth=1,activestyle="none")
         scroll=ttk.Scrollbar(list_frame,orient="vertical",command=self.generated_files.yview);self.generated_files.configure(yscrollcommand=scroll.set);self.generated_files.pack(side="left",fill="both",expand=True);scroll.pack(side="right",fill="y")
         self.generation_close=ttk.Button(body,text="Fermer",style="Primary.TButton",state="disabled",command=window.destroy);self.generation_close.pack(anchor="e",pady=(12,0))
-        window.protocol("WM_DELETE_WINDOW",lambda:messagebox.showwarning("Traitement en cours","Attendez la fin de la génération avant de fermer cette fenêtre."));window.after_idle(lambda:self._center_child_window(window))
+        window.protocol("WM_DELETE_WINDOW",lambda:messagebox.showwarning("Traitement en cours","Attendez la fin de la génération avant de fermer cette fenêtre."));window.after_idle(lambda:self._center_child_window(window,720,460))
 
     def _update_generation_dialog(self,value,text):
         if not self.generation_window or not self.generation_window.winfo_exists():return

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 import uuid
@@ -57,6 +58,12 @@ def standardize_payroll(data: pd.DataFrame, metadata: Dict, mapping: Optional[Di
         output[column] = _money(renamed, column)
     gross = ["remuneration_base", "transport", "prime", "logement", "pension_rente", "autres_remunerations"]
     output["remuneration_brute_calculee"] = output[gross].sum(axis=1)
+    extra_targets=sorted(column for column in renamed.columns if str(column).startswith("composante_"))
+    if extra_targets:
+        extra_frame=pd.DataFrame({str(column)[11:].upper():_money(renamed,column) for column in extra_targets},index=renamed.index)
+        output["composantes_supplementaires_json"]=[json.dumps({key:float(value) for key,value in row.items()},ensure_ascii=False) for row in extra_frame.to_dict("records")]
+    else:output["composantes_supplementaires_json"]="{}"
+    output["formule_remuneration_id"]="FORMULE_DEFAUT"
     output["ligne_source"] = range(2, len(output) + 2)
     return output
 

@@ -67,3 +67,7 @@ dist/
 *.temp
 *.bak
 ~$*
+
+# Configuration locale de la version d’essai
+.sicorpa_trial_secret
+controle_paie/_trial_build.py

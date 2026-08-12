@@ -1,7 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
+from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
 
-hiddenimports = collect_submodules("duckdb") + collect_submodules("openpyxl")
+trial_hiddenimports = ["controle_paie._trial_build"] if Path("controle_paie/_trial_build.py").exists() else []
+hiddenimports = collect_submodules("duckdb") + collect_submodules("openpyxl") + collect_submodules("docx") + collect_submodules("pypdf") + collect_submodules("pdfplumber") + trial_hiddenimports
 
 a = Analysis(
     ["app.py"],
