@@ -27,7 +27,7 @@ def _insert_payroll(con, line_id, exec_id, institution, regime, mat, name):
          matricule_source,matricule_normalise,nom,prenom,nom_normalise,
          remuneration_brute_calculee,montant_net,ligne_source)
         VALUES (?,?,?,?, 'T1',2026,?,?,?,?,?,?,0,0,1)""",
-        [line_id, exec_id, institution, regime, mat, mat, name, "", name.upper().replace(" ", "")])
+        [line_id, exec_id, institution, regime, "TEST", mat, mat, name, "", name.upper().replace(" ", "")])
 
 
 def test_raw_reanalysis_preserves_previous_analysis_and_creates_next_version(tmp_path: Path):
