@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .regime_comparison_strict import StrictRegimeComparisonService
+from .regime_comparison_strict_export import StrictExportRegimeComparisonService
 from .regime_comparison_ui import PayrollAppWithRegimeComparison
 
 
@@ -9,12 +9,12 @@ class PayrollAppWithFinalRegimeComparison(PayrollAppWithRegimeComparison):
 
     def _build_matching(self):
         super()._build_matching()
-        self.regime_comparison = StrictRegimeComparisonService(self.db)
+        self.regime_comparison = StrictExportRegimeComparisonService(self.db)
         if hasattr(self, "compare_filter_combo"):
             self.compare_filter_combo["values"] = [
                 "Tous",
                 "Payés dans les deux (identité exacte)",
-                *StrictRegimeComparisonService.STATUSES,
+                *StrictExportRegimeComparisonService.STATUSES,
             ]
 
     def _refresh_regime_comparison_results(self):
