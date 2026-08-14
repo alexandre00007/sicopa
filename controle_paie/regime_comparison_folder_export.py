@@ -16,15 +16,20 @@ class RegimeComparisonFolderExporter:
 
     EXPORTS = [
         ("01_tous_les_resultats.xlsx", "Tous les résultats", ""),
-        ("02_payes_dans_les_deux.xlsx", "Payés dans les deux", "DOUBLE_PAIEMENT"),
-        ("03_uniquement_regime_a.xlsx", "Uniquement régime A", "UNIQUEMENT_REGIME_A"),
-        ("04_uniquement_regime_b.xlsx", "Uniquement régime B", "UNIQUEMENT_REGIME_B"),
-        ("05_ecarts_financiers.xlsx", "Écarts financiers", "ECART_FINANCIER"),
-        ("06_ecarts_financiers_et_admin.xlsx", "Écarts financiers et administratifs", "ECART_FINANCIER_ET_ADMIN"),
-        ("07_ecarts_administratifs.xlsx", "Écarts administratifs", "ECART_ADMINISTRATIF"),
-        ("08_paiements_multiples.xlsx", "Paiements multiples", "PAIEMENT_MULTIPLE"),
-        ("09_identites_incoherentes.xlsx", "Identités incohérentes", "IDENTITE_INCOHERENTE"),
-        ("10_communs_identiques.xlsx", "Communs identiques", "COMMUN_IDENTIQUE"),
+        ("02_payes_dans_les_deux_identite_exacte.xlsx", "Payés dans les deux — identité exacte", "DOUBLE_PAIEMENT"),
+        ("03_communs_identiques.xlsx", "Communs identiques", "COMMUN_IDENTIQUE"),
+        ("04_communs_nom_probable.xlsx", "Communs par nom probable", "COMMUN_PAR_NOM_PROBABLE"),
+        ("05_uniquement_regime_a.xlsx", "Uniquement régime A", "UNIQUEMENT_REGIME_A"),
+        ("06_uniquement_regime_b.xlsx", "Uniquement régime B", "UNIQUEMENT_REGIME_B"),
+        ("07_ecarts_financiers.xlsx", "Écarts financiers", "ECART_FINANCIER"),
+        ("08_ecarts_financiers_et_admin.xlsx", "Écarts financiers et administratifs", "ECART_FINANCIER_ET_ADMIN"),
+        ("09_ecarts_administratifs.xlsx", "Écarts administratifs", "ECART_ADMINISTRATIF"),
+        ("10_paiements_multiples.xlsx", "Paiements multiples", "PAIEMENT_MULTIPLE"),
+        ("11_double_paiement_potentiel.xlsx", "Double paiement potentiel", "DOUBLE_PAIEMENT_POTENTIEL"),
+        ("12_identites_incoherentes.xlsx", "Identités incohérentes", "IDENTITE_INCOHERENTE"),
+        ("13_nom_matricule_different.xlsx", "Même nom / matricule différent", "NOM_MATRICULE_DIFFERENT"),
+        ("14_match_ambigu_matricule.xlsx", "Match ambigu par matricule", "MATCH_AMBIGU_MATRICULE"),
+        ("15_match_ambigu_nom.xlsx", "Match ambigu par nom", "MATCH_AMBIGU_NOM"),
     ]
 
     def __init__(self, service):
@@ -70,16 +75,19 @@ class RegimeComparisonFolderExporter:
             ("Comparaison", f"{summary['regime_a']} vs {summary['regime_b']}"),
             ("Période", f"{summary['quarter']} {summary['year']}"),
             ("Lignes régime A", summary["rows_a"]), ("Lignes régime B", summary["rows_b"]),
-            ("Agents communs / payés dans les deux", summary["common"]),
+            ("Identités exactes communes", summary["common"]),
+            ("Double paiement potentiel — identité exacte", summary["double"]),
             ("Uniquement régime A", summary["only_a"]), ("Uniquement régime B", summary["only_b"]),
-            ("Écarts financiers", summary["financial"]), ("Écarts administratifs", summary["administrative"]),
+            ("Écarts financiers sur identités fiables", summary["financial"]),
+            ("Écarts administratifs sur identités fiables", summary["administrative"]),
             ("Masse régime A", summary["mass_a"]), ("Masse régime B", summary["mass_b"]),
             ("Écart de masse", (summary["mass_a"] or 0) - (summary["mass_b"] or 0)),
             ("Seuil financier", summary["threshold_amount"]), ("Seuil pourcentage", summary["threshold_percent"]),
+            ("Règle d'identité", "Commun certain = même matricule normalisé ET même nom normalisé ; aucun candidat ambigu n'est choisi arbitrairement"),
             ("Contenu des annexes", "Colonnes administratives, financières et sources détaillées des régimes A et B"),
         ]
         for row in rows: ws.append(list(sanitize_excel_row(row)))
-        ws.freeze_panes = "A2"; ws.column_dimensions["A"].width = 38; ws.column_dimensions["B"].width = 72
+        ws.freeze_panes = "A2"; ws.column_dimensions["A"].width = 42; ws.column_dimensions["B"].width = 90
         wb.save(path)
 
     def _write_results(self, path: Path, title: str, summary: dict, rows: list[tuple]) -> None:
@@ -93,7 +101,6 @@ class RegimeComparisonFolderExporter:
         ws.auto_filter.ref = ws.dimensions
         ws.sheet_view.showGridLines = False
 
-        # Largeur lisible sans rendre le classeur excessivement large à l'ouverture.
         for index, header in enumerate(DETAIL_HEADERS, 1):
             width = 14
             if any(word in header for word in ("Nom", "Section", "Catégorie", "Grade", "Province")): width = 18
@@ -110,8 +117,8 @@ class RegimeComparisonFolderExporter:
             ("Nombre de lignes", len(rows)),
             ("Identifiant comparaison", summary["id"]),
             ("Régime A", summary["regime_a"]), ("Régime B", summary["regime_b"]),
-            ("Note", "Les montants sont agrégés par clé de comparaison lorsqu'un agent apparaît plusieurs fois dans un régime."),
+            ("Règle stricte", "Les ambiguïtés de matricule ou de nom ne déclenchent aucune comparaison financière automatique."),
         ]
         for row in info_rows: info.append(list(sanitize_excel_row(row)))
-        info.column_dimensions["A"].width = 28; info.column_dimensions["B"].width = 90
+        info.column_dimensions["A"].width = 28; info.column_dimensions["B"].width = 100
         wb.save(path)
