@@ -29,21 +29,28 @@ class AnalysisVersionRegistry:
                 cree_le TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""")
             con.execute("CREATE INDEX IF NOT EXISTS idx_versions_analyses_id ON versions_analyses(type_analyse,analyse_id,numero_version)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_versions_analyses_parent ON versions_analyses(type_analyse,analyse_parent_id)")
 
-    def next_version(self, type_analyse: str, analyse_id: str) -> int:
+    def next_version(self, type_analyse: str, analyse_id: str, parent_id: str | None = None) -> int:
         with self.db.connect() as con:
-            row = con.execute(
-                "SELECT COALESCE(MAX(numero_version),0)+1 FROM versions_analyses WHERE type_analyse=? AND analyse_id=?",
+            own = con.execute(
+                "SELECT COALESCE(MAX(numero_version),0) FROM versions_analyses WHERE type_analyse=? AND analyse_id=?",
                 [type_analyse, analyse_id],
-            ).fetchone()
-        return int(row[0] or 1)
+            ).fetchone()[0]
+            parent = 0
+            if parent_id:
+                parent = con.execute(
+                    "SELECT COALESCE(MAX(numero_version),0) FROM versions_analyses WHERE type_analyse=? AND analyse_id=?",
+                    [type_analyse, parent_id],
+                ).fetchone()[0]
+        return int(max(own or 0, parent or 0) + 1)
 
     def record(self, type_analyse: str, analyse_id: str, *, action: str,
                parent_id: str | None = None, parameters: dict | None = None,
                summary: dict | None = None, algorithm_version: str = IDENTITY_ALGORITHM_VERSION,
                version_number: int | None = None) -> str:
         version_id = str(uuid.uuid4())
-        number = int(version_number or self.next_version(type_analyse, analyse_id))
+        number = int(version_number or self.next_version(type_analyse, analyse_id, parent_id))
         with self.db.connect() as con:
             con.execute("""INSERT INTO versions_analyses
                 (version_id,type_analyse,analyse_id,analyse_parent_id,numero_version,version_algorithme,
@@ -58,5 +65,6 @@ class AnalysisVersionRegistry:
         with self.db.connect() as con:
             return con.execute("""SELECT version_id,numero_version,version_algorithme,action,
                     analyse_parent_id,parametres_json,resume_json,cree_le
-                FROM versions_analyses WHERE type_analyse=? AND analyse_id=?
-                ORDER BY numero_version,cree_le""", [type_analyse,analyse_id]).fetchall()
+                FROM versions_analyses
+                WHERE type_analyse=? AND (analyse_id=? OR analyse_parent_id=?)
+                ORDER BY numero_version,cree_le""", [type_analyse,analyse_id,analyse_id]).fetchall()
