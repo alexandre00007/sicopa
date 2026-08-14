@@ -3,12 +3,12 @@ from __future__ import annotations
 from openpyxl import load_workbook
 from openpyxl.styles import Font
 
-from .regime_comparison_strict import StrictRegimeComparisonService
+from .regime_comparison_versioned import VersionedStrictRegimeComparisonService
 from .spreadsheet_utils import sanitize_excel_row
 
 
-class StrictExportRegimeComparisonService(StrictRegimeComparisonService):
-    """Ajoute les catégories strictes à l'export Excel historique."""
+class StrictExportRegimeComparisonService(VersionedStrictRegimeComparisonService):
+    """Ajoute les catégories strictes à l'export Excel historique avec versionnement."""
 
     def export(self, comparison_id: str, path: str) -> str:
         target = super().export(comparison_id, path)
