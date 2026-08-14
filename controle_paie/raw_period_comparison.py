@@ -201,7 +201,7 @@ class RawPeriodComparisonService:
                           (COALESCE(a.matricule_normalise,'') NOT IN ('','NU') AND a.matricule_normalise=b.matricule_normalise)
                           OR (COALESCE(a.nom_normalise,'')<>'' AND a.nom_normalise=b.nom_normalise)
                       )
-                    ), u AS (SELECT * FROM rows_a UNION ALL SELECT * FROM rows_b_only)
+                    ), u AS (SELECT * FROM rows_a UNION ALL BY NAME SELECT * FROM rows_b_only)
                     SELECT ?,cle,statut,m_mat,m_nom,mat_nom_diff,nom_mat_diff,
                       matricule_normalise,b_matricule,nom_normalise,b_nom_norm,nom,b_nom,prenom,b_prenom,regime,b_regime,institution,b_institution,
                       occ,b_occ,brut,b_brut,net,b_net,COALESCE(brut,0)-COALESCE(b_brut,0),COALESCE(net,0)-COALESCE(b_net,0),
