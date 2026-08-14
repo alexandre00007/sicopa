@@ -67,6 +67,32 @@ class AppConfig:
         self.backups_dir = Path(self.backups_dir) if self.backups_dir else self.runtime_paths.backups_dir
         self.logs_dir = Path(self.logs_dir) if self.logs_dir else self.runtime_paths.logs_dir
 
+    def add_regime(self, code: str, label: str, table_pattern: str, raw_table: str, active: bool = True) -> RegimeConfig:
+        """Register a regime in the in-memory config and validate its table pattern."""
+        import re
+
+        normalized_code = code.strip().upper()
+        normalized_label = label.strip()
+        normalized_raw = raw_table.strip().lower()
+        if not normalized_code:
+            raise ValueError("Le code du régime est obligatoire.")
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", normalized_code):
+            raise ValueError("Le code du régime doit contenir uniquement lettres, chiffres et underscores.")
+        if not normalized_label:
+            raise ValueError("Le libellé du régime est obligatoire.")
+        if not normalized_raw:
+            raise ValueError("La table RAW du régime est obligatoire.")
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", normalized_raw):
+            raise ValueError("La table RAW doit être un identifiant DuckDB valide.")
+        try:
+            re.compile(table_pattern)
+        except re.error as exc:
+            raise ValueError(f"Motif de table invalide : {exc}") from exc
+
+        regime = RegimeConfig(normalized_code, table_pattern.strip(), normalized_raw)
+        self.regimes[normalized_code] = regime
+        return regime
+
     def detect_regime(self, table_name: str) -> Optional[str]:
         import re
         for code, config in self.regimes.items():

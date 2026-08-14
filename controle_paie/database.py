@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Union
@@ -12,12 +14,62 @@ class Database:
     def __init__(self, path: Union[Path, str]):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.temp_directory=self.path.parent/".duckdb_tmp"
+        self.temp_directory.mkdir(parents=True,exist_ok=True)
+        self.threads=self._configured_threads()
+        self.memory_limit_mb=self._configured_memory_limit_mb()
+
+    @staticmethod
+    def _available_memory_bytes() -> int:
+        """Return currently available memory without adding a runtime dependency."""
+        try:
+            if platform.system()=="Windows":
+                import ctypes
+                class MemoryStatus(ctypes.Structure):
+                    _fields_=[("dwLength",ctypes.c_ulong),("dwMemoryLoad",ctypes.c_ulong),
+                        ("ullTotalPhys",ctypes.c_ulonglong),("ullAvailPhys",ctypes.c_ulonglong),
+                        ("ullTotalPageFile",ctypes.c_ulonglong),("ullAvailPageFile",ctypes.c_ulonglong),
+                        ("ullTotalVirtual",ctypes.c_ulonglong),("ullAvailVirtual",ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual",ctypes.c_ulonglong)]
+                status=MemoryStatus();status.dwLength=ctypes.sizeof(status)
+                if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                    return int(status.ullAvailPhys)
+            meminfo=Path("/proc/meminfo")
+            if meminfo.exists():
+                for line in meminfo.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1])*1024
+            return int(os.sysconf("SC_AVPHYS_PAGES"))*int(os.sysconf("SC_PAGE_SIZE"))
+        except Exception:
+            return 3*1024**3
+
+    @staticmethod
+    def _configured_threads() -> int:
+        detected=max(1,int(os.cpu_count() or 4))
+        try:return max(1,min(32,int(os.environ.get("SICORPA_DUCKDB_THREADS",detected))))
+        except ValueError:return min(32,detected)
+
+    def _configured_memory_limit_mb(self) -> int:
+        try:
+            override=int(os.environ.get("SICORPA_DUCKDB_MEMORY_MB","0"))
+            if override>0:return max(512,override)
+        except ValueError:
+            pass
+        # Keep enough memory for Tkinter, Python/OpenPyXL and the operating system.
+        available_mb=max(768,self._available_memory_bytes()//(1024**2))
+        return int(max(512,min(8192,available_mb*0.60)))
+
+    def tuning_info(self) -> dict:
+        return {"threads":self.threads,"memory_limit_mb":self.memory_limit_mb,
+                "temp_directory":str(self.temp_directory)}
 
     @contextmanager
     def connect(self) -> Iterator[duckdb.DuckDBPyConnection]:
         connection = duckdb.connect(str(self.path))
-        connection.execute("SET memory_limit='2GB'")
-        connection.execute("SET threads=4")
+        escaped_temp=str(self.temp_directory).replace("'","''")
+        connection.execute(f"SET memory_limit='{self.memory_limit_mb}MB'")
+        connection.execute(f"SET threads={self.threads}")
+        connection.execute(f"SET temp_directory='{escaped_temp}'")
         try:
             yield connection
         finally:
@@ -102,17 +154,83 @@ class Database:
             """CREATE TABLE IF NOT EXISTS rejets_importation (
                 execution_id VARCHAR, source VARCHAR, ligne_source BIGINT,
                 code_rejet VARCHAR, message VARCHAR, donnees_json VARCHAR)""",
+            """CREATE TABLE IF NOT EXISTS campagnes_analyse_multi (
+                campagne_id VARCHAR PRIMARY KEY, institution_declarative_id VARCHAR NOT NULL,
+                regime_declaratif VARCHAR NOT NULL, trimestre VARCHAR NOT NULL, annee INTEGER NOT NULL,
+                statut VARCHAR NOT NULL, lignes_base BIGINT DEFAULT 0, lignes_declaratives BIGINT DEFAULT 0,
+                cree_le TIMESTAMP DEFAULT CURRENT_TIMESTAMP, termine_le TIMESTAMP)""",
+            """CREATE TABLE IF NOT EXISTS sources_analyse_multi (
+                campagne_id VARCHAR, execution_id VARCHAR, institution_id VARCHAR, regime VARCHAR,
+                table_source VARCHAR, lignes_disponibles BIGINT, lignes_retenues BIGINT,
+                filtres_appliques VARCHAR, PRIMARY KEY(campagne_id,execution_id))""",
+            """CREATE TABLE IF NOT EXISTS base_analyse_multi AS
+                SELECT CAST(NULL AS VARCHAR) campagne_id,p.* FROM paie_standardisee p WHERE FALSE""",
+            """CREATE TABLE IF NOT EXISTS resultats_analyse_multi (
+                resultat_id VARCHAR, campagne_id VARCHAR, ligne_declaratif_id VARCHAR, ligne_paie_id VARCHAR,
+                institution_declarative_id VARCHAR, regime_declaratif VARCHAR,
+                institution_paiement_id VARCHAR, regime_paiement VARCHAR,
+                execution_paiement_id VARCHAR, table_source VARCHAR,
+                methode_correspondance VARCHAR, statut_analyse VARCHAR,
+                nombre_occurrences BIGINT DEFAULT 0, nombre_regimes BIGINT DEFAULT 0,
+                masse_financiere DECIMAL(38,2) DEFAULT 0, impact_potentiel DECIMAL(38,2) DEFAULT 0,
+                formule_impact_id VARCHAR, matricule_normalise VARCHAR, nom_normalise VARCHAR)""",
+            """CREATE TABLE IF NOT EXISTS groupes_analyse_listing (
+                groupe_id VARCHAR PRIMARY KEY, nom VARCHAR NOT NULL, trimestre VARCHAR NOT NULL,
+                annee INTEGER NOT NULL, statut VARCHAR NOT NULL, lignes_base BIGINT DEFAULT 0,
+                cree_le TIMESTAMP DEFAULT CURRENT_TIMESTAMP, termine_le TIMESTAMP,
+                archive BOOLEAN DEFAULT FALSE, dossier_export VARCHAR)""",
+            """CREATE TABLE IF NOT EXISTS sources_analyse_listing (
+                groupe_id VARCHAR, execution_id VARCHAR, institution_id VARCHAR, regime VARCHAR,
+                table_source VARCHAR, lignes_disponibles BIGINT, lignes_retenues BIGINT,
+                filtres_appliques VARCHAR, PRIMARY KEY(groupe_id,execution_id))""",
+            """CREATE TABLE IF NOT EXISTS base_analyse_listing AS
+                SELECT CAST(NULL AS VARCHAR) groupe_id,p.* FROM paie_standardisee p WHERE FALSE""",
+            """CREATE TABLE IF NOT EXISTS resultats_analyse_listing (
+                resultat_id VARCHAR, groupe_id VARCHAR, ligne_paie_id VARCHAR,
+                institution_id VARCHAR, regime VARCHAR, execution_id VARCHAR, table_source VARCHAR,
+                statut_analyse VARCHAR, occurrences_matricule BIGINT DEFAULT 0,
+                occurrences_nom BIGINT DEFAULT 0, nombre_regimes BIGINT DEFAULT 0,
+                nombre_institutions BIGINT DEFAULT 0, rang_occurrence BIGINT DEFAULT 1,
+                masse_financiere DECIMAL(38,2) DEFAULT 0,
+                impact_potentiel DECIMAL(38,2) DEFAULT 0, formule_impact_id VARCHAR,
+                matricule_normalise VARCHAR, nom_normalise VARCHAR)""",
         ]
         with self.connect() as con:
             for statement in statements:
                 con.execute(statement)
             con.execute("ALTER TABLE paie_standardisee ADD COLUMN IF NOT EXISTS composantes_supplementaires_json VARCHAR DEFAULT '{}'")
             con.execute("ALTER TABLE paie_standardisee ADD COLUMN IF NOT EXISTS formule_remuneration_id VARCHAR")
+            con.execute("ALTER TABLE base_analyse_multi ADD COLUMN IF NOT EXISTS composantes_supplementaires_json VARCHAR DEFAULT '{}'")
+            con.execute("ALTER TABLE base_analyse_multi ADD COLUMN IF NOT EXISTS formule_remuneration_id VARCHAR")
+            con.execute("ALTER TABLE base_analyse_listing ADD COLUMN IF NOT EXISTS composantes_supplementaires_json VARCHAR DEFAULT '{}'")
+            con.execute("ALTER TABLE base_analyse_listing ADD COLUMN IF NOT EXISTS formule_remuneration_id VARCHAR")
+            con.execute("ALTER TABLE resultats_analyse_listing ADD COLUMN IF NOT EXISTS rang_occurrence BIGINT DEFAULT 1")
             con.execute("ALTER TABLE resultats_rapprochement ADD COLUMN IF NOT EXISTS formule_impact_id VARCHAR")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_paie_execution ON paie_standardisee(execution_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_paie_periode_matricule ON paie_standardisee(trimestre,annee,matricule_normalise)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_paie_scope ON paie_standardisee(institution_id,regime,trimestre,annee)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_paie_scope_nom ON paie_standardisee(institution_id,regime,trimestre,annee,nom_normalise)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_declaratif_execution ON declaratif_standardise(execution_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_declaratif_periode_matricule ON declaratif_standardise(trimestre,annee,matricule_normalise)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_declaratif_scope ON declaratif_standardise(institution_id,regime,trimestre,annee)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_declaratif_scope_nom ON declaratif_standardise(institution_id,regime,trimestre,annee,nom_normalise)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_resultats_scope ON resultats_rapprochement(institution_id,regime,trimestre,annee)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_base_multi_campagne_matricule ON base_analyse_multi(campagne_id,matricule_normalise)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_base_multi_campagne_execution ON base_analyse_multi(campagne_id,execution_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_resultats_multi_campagne ON resultats_analyse_multi(campagne_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_resultats_multi_declaratif ON resultats_analyse_multi(campagne_id,ligne_declaratif_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_base_listing_groupe_matricule ON base_analyse_listing(groupe_id,matricule_normalise)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_base_listing_groupe_execution ON base_analyse_listing(groupe_id,execution_id)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_resultats_listing_groupe ON resultats_analyse_listing(groupe_id)")
+            con.execute("ALTER TABLE campagnes_analyse_multi ADD COLUMN IF NOT EXISTS declaratif_execution_id VARCHAR")
+            con.execute("ALTER TABLE campagnes_analyse_multi ADD COLUMN IF NOT EXISTS archivee BOOLEAN DEFAULT FALSE")
+            con.execute("ALTER TABLE campagnes_analyse_multi ADD COLUMN IF NOT EXISTS dossier_export VARCHAR")
             builtins=[
                 ("REMUNERATION_BASE","Rémunération de base","remuneration_base"),("TRANSPORT","Transport","transport"),
                 ("PRIME","Prime","prime"),("LOGEMENT","Logement","logement"),("PENSION_RENTE","Pension / rente","pension_rente"),
-                ("AUTRES_REMUNERATIONS","Autres rémunérations","autres_remunerations"),("RETENUES","Retenues","retenues"),("MONTANT_NET","Montant net","montant_net")]
+                ("AUTRES_REMUNERATIONS","Autres rémunérations","autres_remunerations"),("RETENUES","Retenues","retenues"),
+                ("MONTANT_NET","Montant net","montant_net"),
+                ("REMUNERATION_BRUTE_CALCULEE","Rémunération brute calculée","remuneration_brute_calculee")]
             for code,label,column in builtins:
                 con.execute("""INSERT INTO config_composantes_financieres(code,libelle,colonne_standard,systeme,actif)
                     VALUES (?,?,?,TRUE,TRUE) ON CONFLICT(code) DO UPDATE SET libelle=excluded.libelle,colonne_standard=excluded.colonne_standard""",[code,label,column])
@@ -132,9 +250,118 @@ class Database:
             con.execute("INSERT INTO institutions VALUES (?, ?, ?, ?, TRUE, CURRENT_TIMESTAMP)", [identifier, code, name, normalized])
             return identifier
 
+    def delete_institution(self, institution_id: str) -> None:
+        if not institution_id:
+            raise ValueError("L’identifiant de l’institution est obligatoire.")
+        with self.connect() as con:
+            con.execute("DELETE FROM institution_aliases WHERE institution_id=?", [institution_id])
+            con.execute("DELETE FROM institution_regimes WHERE institution_id=?", [institution_id])
+            con.execute("DELETE FROM config_filtres_traitement WHERE institution_id=?", [institution_id])
+            con.execute("DELETE FROM config_formules_impact WHERE institution_id=?", [institution_id])
+            con.execute("DELETE FROM institutions WHERE institution_id=?", [institution_id])
+
     def list_institutions(self) -> list[tuple]:
         with self.connect() as con:
             return con.execute("SELECT institution_id, code, nom_officiel FROM institutions WHERE actif ORDER BY nom_officiel").fetchall()
+
+    def list_declaration_imports(self, institution_id: str = "", regime: str = "",
+                                 quarter: str = "", year: int | None = None) -> list[tuple]:
+        """List auditable declarative imports and whether derived analyses use them."""
+        conditions = ["j.type_operation='IMPORT_EXCEL'", "j.table_destination='declaratif_standardise'",
+                      "COALESCE(j.statut,'')<>'SUPPRIME'"]
+        params = []
+        for column, value in (("j.institution_id", institution_id), ("j.regime", regime),
+                              ("j.trimestre", quarter), ("j.annee", year)):
+            if value not in {"", None}:
+                conditions.append(f"{column}=?");params.append(value)
+        query = f"""SELECT j.execution_id,COALESCE(i.nom_officiel,j.institution_id),j.regime,
+                j.trimestre,j.annee,j.fichier_source,j.table_source,j.mode_chargement,
+                (SELECT COUNT(*) FROM declaratif_standardise d WHERE d.execution_id=j.execution_id) lignes,
+                COALESCE(j.date_fin,j.date_debut) date_import,
+                (SELECT COUNT(DISTINCT r.execution_id) FROM resultats_rapprochement r
+                 JOIN declaratif_standardise d ON d.ligne_declaratif_id=r.ligne_declaratif_id
+                 WHERE d.execution_id=j.execution_id) rapprochements,
+                (SELECT COUNT(*) FROM campagnes_analyse_multi c
+                 WHERE c.declaratif_execution_id=j.execution_id) campagnes
+            FROM journal_executions j LEFT JOIN institutions i ON i.institution_id=j.institution_id
+            WHERE {' AND '.join(conditions)} ORDER BY date_import DESC"""
+        with self.connect() as con:
+            return con.execute(query, params).fetchall()
+
+    def delete_declaration_import(self, execution_id: str) -> dict:
+        """Delete an unused declarative import while retaining an audit journal entry."""
+        with self.connect() as con:
+            record = con.execute("""SELECT fichier_source,table_source,institution_id,regime,trimestre,annee
+                FROM journal_executions WHERE execution_id=? AND type_operation='IMPORT_EXCEL'
+                AND table_destination='declaratif_standardise' AND COALESCE(statut,'')<>'SUPPRIME'""",
+                [execution_id]).fetchone()
+            if not record:
+                raise ValueError("Import déclaratif introuvable ou déjà supprimé.")
+            lines = con.execute("SELECT COUNT(*) FROM declaratif_standardise WHERE execution_id=?",
+                                [execution_id]).fetchone()[0]
+            matching_refs = con.execute("""SELECT COUNT(DISTINCT r.execution_id)
+                FROM resultats_rapprochement r JOIN declaratif_standardise d
+                  ON d.ligne_declaratif_id=r.ligne_declaratif_id
+                WHERE d.execution_id=?""", [execution_id]).fetchone()[0]
+            campaign_refs = con.execute("SELECT COUNT(*) FROM campagnes_analyse_multi WHERE declaratif_execution_id=?",
+                                        [execution_id]).fetchone()[0]
+            if matching_refs or campaign_refs:
+                usages=[]
+                if matching_refs:usages.append(f"{matching_refs} rapprochement(s)")
+                if campaign_refs:usages.append(f"{campaign_refs} campagne(s) multi-régimes")
+                raise ValueError("Suppression bloquée : cet import est utilisé par " + " et ".join(usages) +
+                                 ". Conservez-le pour garantir la traçabilité des résultats.")
+            con.execute("BEGIN")
+            try:
+                con.execute("DELETE FROM rejets_importation WHERE execution_id=?", [execution_id])
+                con.execute("DELETE FROM schemas_sources WHERE execution_id=?", [execution_id])
+                con.execute("DELETE FROM declaratif_standardise WHERE execution_id=?", [execution_id])
+                con.execute("""UPDATE journal_executions SET statut='SUPPRIME',
+                    message=?,date_fin=CURRENT_TIMESTAMP WHERE execution_id=?""",
+                    [f"Import déclaratif supprimé par l’utilisateur ({lines} lignes)", execution_id])
+                con.execute("COMMIT")
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
+        return {"execution_id": execution_id, "lines": int(lines), "file": record[0],
+                "sheet": record[1], "institution_id": record[2], "regime": record[3],
+                "quarter": record[4], "year": record[5]}
+
+    def delete_data_scope(self, institution_id: str, regime: str, quarter: str, year: int | str) -> dict:
+        """Delete all standardized data for a given institution/regime/period.
+
+        This is used by the explorer to remove a whole quarterly data scope while keeping
+        configuration tables intact.
+        """
+        institution_id = str(institution_id).strip(); regime = str(regime).strip(); quarter = str(quarter).strip();
+        if not institution_id: raise ValueError("L’identifiant de l’institution est obligatoire.")
+        if not regime: raise ValueError("Le régime est obligatoire.")
+        if not quarter: raise ValueError("Le trimestre est obligatoire.")
+        try: year = int(year)
+        except (TypeError, ValueError) as exc: raise ValueError("L’année doit être un nombre valide.") from exc
+        with self.connect() as con:
+            con.execute("BEGIN")
+            try:
+                paie_rows = con.execute("SELECT COUNT(*) FROM paie_standardisee WHERE institution_id=? AND regime=? AND trimestre=? AND annee=?",
+                                       [institution_id, regime, quarter, year]).fetchone()[0]
+                declaratif_rows = con.execute("SELECT COUNT(*) FROM declaratif_standardise WHERE institution_id=? AND regime=? AND trimestre=? AND annee=?",
+                                              [institution_id, regime, quarter, year]).fetchone()[0]
+                matching_rows = con.execute("SELECT COUNT(*) FROM resultats_rapprochement WHERE institution_id=? AND regime=? AND trimestre=? AND annee=?",
+                                            [institution_id, regime, quarter, year]).fetchone()[0]
+                con.execute("DELETE FROM resultats_rapprochement WHERE institution_id=? AND regime=? AND trimestre=? AND annee=?",
+                            [institution_id, regime, quarter, year])
+                con.execute("DELETE FROM paie_standardisee WHERE institution_id=? AND regime=? AND trimestre=? AND annee=?",
+                            [institution_id, regime, quarter, year])
+                con.execute("DELETE FROM declaratif_standardise WHERE institution_id=? AND regime=? AND trimestre=? AND annee=?",
+                            [institution_id, regime, quarter, year])
+                con.execute("COMMIT")
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
+        return {"institution_id": institution_id, "regime": regime,
+                "quarter": quarter, "year": year,
+                "paie_rows": int(paie_rows), "declaratif_rows": int(declaratif_rows),
+                "matching_rows": int(matching_rows)}
 
     def upsert_regime(self, code: str, label: str, table_pattern: str, raw_table: str,
                       active: bool = True) -> None:
@@ -163,10 +390,21 @@ class Database:
         with self.connect() as con:
             con.execute("UPDATE config_regimes SET actif=?,modifie_le=now() WHERE code=?",[active,code])
 
+    def delete_regime(self, code: str) -> None:
+        if not code or not str(code).strip():
+            raise ValueError("Le code du régime est obligatoire.")
+        normalized = str(code).strip().upper()
+        with self.connect() as con:
+            con.execute("DELETE FROM config_mapping_colonnes WHERE regime=?", [normalized])
+            con.execute("DELETE FROM config_filtres_traitement WHERE regime=?", [normalized])
+            con.execute("DELETE FROM config_formules_impact WHERE regime=?", [normalized])
+            con.execute("DELETE FROM institution_regimes WHERE regime=?", [normalized])
+            con.execute("DELETE FROM config_regimes WHERE code=?", [normalized])
+
     def upsert_column_mapping(self, regime: str, source_type: str, source_column: str,
                               target_column: str, required: bool = False) -> None:
         source_type = source_type.upper()
-        if source_type not in {"ACCESS", "EXCEL"}: raise ValueError("Le type de source doit être ACCESS ou EXCEL.")
+        if source_type not in {"ACCESS", "PAIE_EXCEL", "EXCEL"}: raise ValueError("Le type de source doit être ACCESS, PAIE_EXCEL ou EXCEL.")
         if not all([regime.strip(), source_column.strip(), target_column.strip()]): raise ValueError("Régime, colonne source et colonne standard sont obligatoires.")
         with self.connect() as con:
             con.execute("""INSERT INTO config_mapping_colonnes (regime,type_source,colonne_source,colonne_standard,obligatoire)
@@ -203,9 +441,56 @@ class Database:
         with self.connect() as con:con.execute("""INSERT INTO config_composantes_financieres(code,libelle,colonne_standard,systeme,actif)
             VALUES (?,?,NULL,FALSE,TRUE) ON CONFLICT(code) DO UPDATE SET libelle=excluded.libelle,actif=TRUE""",[code,label.strip()])
 
+    def delete_financial_component(self, code: str) -> None:
+        normalized = str(code).strip().upper()
+        if not normalized:
+            raise ValueError("Le code de la composante est obligatoire.")
+        with self.connect() as con:
+            con.execute("DELETE FROM config_composantes_financieres WHERE code=?", [normalized])
+
     def list_financial_components(self, active_only: bool=True) -> list[tuple]:
         query="SELECT code,libelle,colonne_standard,systeme,actif FROM config_composantes_financieres"+(" WHERE actif" if active_only else "")
         with self.connect() as con:return con.execute(query+" ORDER BY systeme DESC,libelle").fetchall()
+
+    def available_financial_components(self,institution_id: str="",regime: str="",
+                                       quarter: str="",year: int | None=None) -> list[tuple]:
+        """Return components backed by a mapped field or observed payroll values.
+
+        Rows contain the code, label, standardized field, mapping presence,
+        populated row count and total payroll row count in the selected perimeter.
+        """
+        components=self.list_financial_components();conditions=[];params=[]
+        if institution_id:conditions.append("institution_id=?");params.append(institution_id)
+        if regime:conditions.append("regime=?");params.append(regime)
+        if quarter:conditions.append("trimestre=?");params.append(quarter)
+        if year is not None:conditions.append("annee=?");params.append(int(year))
+        where=" WHERE "+" AND ".join(conditions) if conditions else ""
+        mapping_conditions=[];mapping_params=[]
+        if regime:mapping_conditions.append("regime=?");mapping_params.append(regime)
+        mapping_where=" WHERE "+" AND ".join(mapping_conditions) if mapping_conditions else ""
+        with self.connect() as con:
+            total=int(con.execute(f"SELECT COUNT(*) FROM paie_standardisee{where}",params).fetchone()[0])
+            mapped_targets={str(row[0]) for row in con.execute(
+                "SELECT DISTINCT colonne_standard FROM config_mapping_colonnes"+mapping_where,
+                mapping_params).fetchall()}
+            result=[]
+            for code,label,column,_system,_active in components:
+                target=column or f"composante_{code}"
+                mapped=target in mapped_targets
+                if column:
+                    populated=int(con.execute(
+                        f'SELECT COUNT(*) FROM paie_standardisee{where}' +
+                        (" AND " if where else " WHERE ") +
+                        f'ABS(COALESCE("{column}",0))>0',params).fetchone()[0])
+                else:
+                    populated=int(con.execute(
+                        f"SELECT COUNT(*) FROM paie_standardisee{where}" +
+                        (" AND " if where else " WHERE ") +
+                        "json_extract_string(composantes_supplementaires_json, ?) IS NOT NULL",
+                        params+[f'$.{code}']).fetchone()[0])
+                if mapped or populated:
+                    result.append((code,label,target,mapped,populated,total))
+        return result
 
     def save_impact_formula(self,name: str,institution_id: str,regime: str,rubric: str,quarter: str,year: int,aggregation: str,terms: list[dict]) -> str:
         import re,uuid
@@ -244,6 +529,12 @@ class Database:
     def set_impact_formula_active(self,formula_id: str,active: bool) -> None:
         with self.connect() as con:con.execute("UPDATE config_formules_impact SET actif=? WHERE formule_id=?",[active,formula_id])
 
+    def delete_impact_formula(self, formula_id: str) -> None:
+        if not formula_id:
+            raise ValueError("L’identifiant de la formule est obligatoire.")
+        with self.connect() as con:
+            con.execute("DELETE FROM config_formules_impact WHERE formule_id=?", [formula_id])
+
     def resolve_impact_formula(self,institution_id: str,regime: str,quarter: str,year: int,rubric: str) -> dict:
         qnum=int(str(quarter).replace("T",""));rows=self.list_impact_formulas(regime,institution_id)
         candidates=[]
@@ -257,6 +548,26 @@ class Database:
             row=max(candidates,key=lambda x:x[:4])[4]
             return {"id":row[0],"name":row[1],"institution_id":row[2],"regime":row[3],"rubric":row[4],"quarter":row[5],"year":row[6],"aggregation":row[7],"terms":json.loads(row[8]),"version":row[9]}
         return self.default_impact_formula()
+
+    def selectable_impact_formulas(self,institution_id: str,regime: str,quarter: str,year: int) -> list[dict]:
+        """List active global formulas that may safely override a whole matching run."""
+        qnum=int(str(quarter).replace("T",""));items=[self.default_impact_formula()]
+        for row in self.list_impact_formulas(regime,institution_id):
+            fid,_name,iid,_reg,rubric,qstart,ystart,_aggregation,_terms,_version,active=row
+            if not active or rubric!="*":continue
+            if iid and iid!=institution_id:continue
+            if (int(ystart),int(str(qstart).replace("T","")))>(int(year),qnum):continue
+            items.append(self.get_impact_formula(fid))
+        return items
+
+    def selected_impact_formula(self,formula_id: str,institution_id: str,regime: str,
+                                quarter: str,year: int) -> dict:
+        """Validate a user-selected formula before forcing it on a matching run."""
+        allowed={item["id"]:item for item in self.selectable_impact_formulas(
+            institution_id,regime,quarter,year)}
+        if formula_id not in allowed:
+            raise ValueError("La formule choisie n’est pas active ou ne correspond pas au régime, à l’institution et à la période sélectionnés.")
+        return allowed[formula_id]
 
     def default_impact_formula(self) -> dict:
         return {"id":"FORMULE_DEFAUT","name":"Formule SICORPA par défaut","institution_id":"","regime":"Tous les régimes","rubric":"*","quarter":"T1","year":2020,"aggregation":"TOUTES_LIGNES","terms":[dict(term) for term in self.DEFAULT_IMPACT_TERMS],"version":1,"system":True}
@@ -276,8 +587,11 @@ class Database:
         if aggregation=="UNIQUE_AGENT":return f"CASE WHEN {duplicate_rank}=1 THEN ({expression}) ELSE 0 END"
         return expression
 
-    def impact_sql(self,institution_id: str,regime: str,quarter: str,year: int,rubric: str,alias: str="p",duplicate_rank: str="1") -> tuple[str,dict]:
-        formula=self.resolve_impact_formula(institution_id,regime,quarter,year,rubric)
+    def impact_sql(self,institution_id: str,regime: str,quarter: str,year: int,rubric: str,
+                   alias: str="p",duplicate_rank: str="1",formula_id: str="") -> tuple[str,dict]:
+        formula=(self.selected_impact_formula(formula_id,institution_id,regime,quarter,year)
+                 if formula_id else
+                 self.resolve_impact_formula(institution_id,regime,quarter,year,rubric))
         return self.formula_terms_sql(formula["terms"],formula["aggregation"],alias,duplicate_rank),formula
 
     PAYROLL_FILTER_COLUMNS = {

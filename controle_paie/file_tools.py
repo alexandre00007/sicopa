@@ -16,6 +16,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader, PdfWriter
 
+from .spreadsheet_utils import sanitize_excel_row, sanitize_xml_text
+
 
 Progress = Optional[Callable[[int, str], None]]
 
@@ -151,7 +153,7 @@ def pdf_to_excel(source: str, target: str, progress: Progress = None, use_ocr: b
                         title = _safe_sheet_name(f"P{page_number}_Tableau{table_number}", used)
                         sheet = workbook.create_sheet(title)
                         for row in table:
-                            sheet.append([cell if cell is not None else "" for cell in row])
+                            sheet.append(sanitize_excel_row(cell if cell is not None else "" for cell in row))
                         _style_sheet(sheet); extracted_content += 1
                         index_rows.append([page_number, "Tableau", title, max(0, len(table) - 1)])
                 else:
@@ -163,7 +165,7 @@ def pdf_to_excel(source: str, target: str, progress: Progress = None, use_ocr: b
                         title = _safe_sheet_name(f"Page_{page_number}", used); sheet = workbook.create_sheet(title)
                         sheet.append(["Ligne", "Texte extrait"])
                         for line_number, line in enumerate(text.splitlines(), 1):
-                            sheet.append([line_number, line])
+                            sheet.append(sanitize_excel_row([line_number, line]))
                         _style_sheet(sheet); extracted_content += 1
                         index_rows.append([page_number, "Texte OCR — à vérifier" if ocr_used else "Texte", title, len(text.splitlines())])
                 progress and progress(int(page_number / total * 90), f"Extraction Excel : page {page_number}/{total}")
@@ -192,7 +194,7 @@ def _configure_document(document: Document, source_name: str) -> None:
     title = document.add_paragraph()
     run = title.add_run("Conversion du document PDF")
     run.bold = True; run.font.size = Pt(20); run.font.color.rgb = RGBColor(18, 53, 91)
-    subtitle = document.add_paragraph(f"Source : {source_name}")
+    subtitle = document.add_paragraph(sanitize_xml_text(f"Source : {source_name}"))
     subtitle.runs[0].font.color.rgb = RGBColor(97, 113, 135)
 
 
@@ -218,7 +220,7 @@ def pdf_to_word(source: str, target: str, progress: Progress = None, use_ocr: bo
                         warning=document.add_paragraph("Texte obtenu par OCR — vérifiez les matricules, noms et montants.")
                         warning.runs[0].italic=True;warning.runs[0].font.color.rgb=RGBColor(180,83,9)
                     for block in re.split(r"\n\s*\n", text):
-                        document.add_paragraph(block.replace("\n", " "))
+                        document.add_paragraph(sanitize_xml_text(block.replace("\n", " ")))
                     extracted_content += 1
                 tables = page.extract_tables() or []
                 for table_data in tables:
@@ -228,7 +230,7 @@ def pdf_to_word(source: str, target: str, progress: Progress = None, use_ocr: bo
                     table = document.add_table(rows=0, cols=width); table.style = "Table Grid"
                     for row_index, row_data in enumerate(table_data):
                         cells = table.add_row().cells
-                        for column, value in enumerate(row_data): cells[column].text = str(value or "")
+                        for column, value in enumerate(row_data): cells[column].text = sanitize_xml_text(value or "")
                         if row_index == 0:
                             for cell in cells:
                                 for run in cell.paragraphs[0].runs: run.bold = True

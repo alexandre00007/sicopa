@@ -14,7 +14,8 @@ if errorlevel 1 exit /b 1
 py tools\generate_trial_config.py --days %TRIAL_DAYS%
 if errorlevel 1 exit /b 1
 
-py -m PyInstaller --noconfirm sicorpa.spec
+rem L’icône EXE est définie dans sicorpa.spec
+py -m PyInstaller --noconfirm --clean sicorpa.spec
 set "BUILD_RESULT=%ERRORLEVEL%"
 if exist controle_paie\_trial_build.py del /q controle_paie\_trial_build.py
 if not "%BUILD_RESULT%"=="0" exit /b %BUILD_RESULT%

@@ -1,5 +1,7 @@
 # SICORPA
 
+![Icône SICORPA](assets/sicorpa.png)
+
 **Système Intégré de Contrôle et de Rapprochement de la Paie**  
 Version 1.0.0 — Développé par **Alexandre Mulumba Kande**.
 
@@ -86,6 +88,8 @@ build_windows.bat
 ```
 
 Le résultat est `dist\SICORPA.exe`. L’exécutable peut être déplacé; la base reste dans le profil utilisateur et survit aux mises à jour.
+
+L’icône de l’exécutable est intégrée par la ligne `icon="assets/sicorpa.ico"` du bloc `EXE` dans `sicorpa.spec`. Les scripts exécutent PyInstaller avec `--clean` afin d’éviter de réutiliser une ancienne icône mise en cache. Avec une construction pilotée par un fichier .spec, ajouter aussi `--icon` sur la ligne de commande serait ignoré par PyInstaller.
 
 ## Construction Linux
 

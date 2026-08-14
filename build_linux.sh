@@ -16,5 +16,5 @@ cleanup_trial_config() {
 }
 trap cleanup_trial_config EXIT
 
-python -m PyInstaller --noconfirm sicorpa.spec
+python -m PyInstaller --noconfirm --clean sicorpa.spec  # L’icône EXE est définie dans sicorpa.spec
 printf '%s\n' "Exécutable d'essai créé : dist/SICORPA ($trial_days jours)"

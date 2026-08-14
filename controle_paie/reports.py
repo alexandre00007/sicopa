@@ -10,6 +10,7 @@ from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from .database import Database
 from .letters import generate_interpretation_letter
+from .spreadsheet_utils import sanitize_excel_row, sanitize_excel_value
 
 Progress = Optional[Callable[[int, str], None]]
 
@@ -25,7 +26,7 @@ class ReportService:
             rows=con.execute("""SELECT statut_rapprochement,COUNT(*),COALESCE(SUM(masse_financiere_controlee),0),COALESCE(SUM(impact_potentiel),0),COALESCE(SUM(impact_confirme),0) FROM resultats_rapprochement WHERE institution_id=? AND regime=? AND trimestre=? AND annee=? GROUP BY statut_rapprochement ORDER BY statut_rapprochement""",params).fetchall()
         wb=Workbook();ws=wb.active;ws.title="Synthèse";self._title(ws,institution,regime,quarter,year)
         ws.append(["Catégorie","Enregistrements","Masse contrôlée","Impact potentiel","Impact confirmé"]);self._style_header(ws[4])
-        for row in rows:ws.append(list(row))
+        for row in rows:ws.append(sanitize_excel_row(row))
         ws.freeze_panes="A6";ws.auto_filter.ref=f"A5:E{ws.max_row}"
         for letter,width in zip("ABCDE",[36,18,22,22,22]):ws.column_dimensions[letter].width=width
         note=wb.create_sheet("Méthodologie");note.append(["MÉTHODOLOGIE DU CONTRÔLE"]);note["A1"].font=Font(bold=True,size=15,color="12355B")
@@ -39,7 +40,8 @@ class ReportService:
             if temporary.exists():temporary.unlink()
         progress and progress(20,f"Fichier généré : {target.name}");return target
 
-    def generate_package(self, root: str, institution_id: str, regime: str, quarter: str, year: int, progress: Progress = None) -> Path:
+    def generate_package(self, root: str, institution_id: str, regime: str, quarter: str, year: int,
+                         progress: Progress = None,impact_formula_id: str = "") -> Path:
         """Generate the historical listing, declarative and comparison annex families."""
         with self.db.connect() as con:
             found=con.execute("SELECT nom_officiel FROM institutions WHERE institution_id=?",[institution_id]).fetchone()
@@ -47,22 +49,40 @@ class ReportService:
         slug=re.sub(r"[^A-Za-z0-9]+","_",institution).strip("_").lower();stamp=datetime.now().strftime("%Y%m%d_%H%M%S")
         package=Path(root)/f"{year}_{quarter}_{regime}_{slug}_{stamp}";package.mkdir(parents=True,exist_ok=True)
         progress and progress(1,"Initialisation du dossier de résultats")
-        specs=self._prepare_impact_specs(self._historical_annex_specs(institution_id,regime,quarter,year),institution_id,regime,quarter,year)
+        specs=self._prepare_impact_specs(self._historical_annex_specs(institution_id,regime,quarter,year),
+            institution_id,regime,quarter,year,impact_formula_id)
         summaries=[];total=max(1,len(specs))
-        for index,spec in enumerate(specs,1):
-            folder=package/spec["folder"];folder.mkdir(parents=True,exist_ok=True);target=folder/spec["filename"]
-            effectif_query=self._effectif_query(spec);effectif_folder_name=spec["folder"].replace("annexes_","effectifs_")
-            effectif_filename=f"effectif_{Path(spec['filename']).stem}.xlsx";effectif_folder=package/effectif_folder_name;effectif_folder.mkdir(parents=True,exist_ok=True);effectif_target=effectif_folder/effectif_filename
-            with self.db.connect() as con:
-                count,impact=con.execute(f'SELECT COUNT(*),COALESCE(SUM(impact_calcule),0) FROM ({spec["query"]}) donnees',spec["params"]).fetchone()
-                concerned=con.execute(f"SELECT COUNT(*) FROM ({effectif_query}) effectifs",spec["params"]).fetchone()[0]
-            base=22+73*(index-1)/total;span=73/total;detail_span=span*0.62
-            progress and progress(int(base),f'Annexe {index}/{total} : {spec["label"]} ({count} lignes, {concerned} concernés)')
-            self._stream_query(target,spec["query"],spec["params"],institution,regime,quarter,year,spec["label"],count,progress,base,detail_span)
-            progress and progress(int(base+detail_span),f"Fichier généré : {spec['folder']}/{spec['filename']}")
-            self._stream_query(effectif_target,effectif_query,spec["params"],institution,regime,quarter,year,f"Effectif unique — {spec['label']}",concerned,progress,base+detail_span,span-detail_span)
-            progress and progress(int(base+span),f"Fichier généré : {effectif_folder_name}/{effectif_filename}")
-            summaries.append({**spec,"count":count,"concerned":concerned,"impact":impact,"relative_path":str(Path(spec["folder"])/spec["filename"]),"effectif_path":str(Path(effectif_folder_name)/effectif_filename)})
+        with self.db.connect() as con:
+            for index,spec in enumerate(specs,1):
+                folder=package/spec["folder"];folder.mkdir(parents=True,exist_ok=True);target=folder/spec["filename"]
+                effectif_folder_name=spec["folder"].replace("annexes_","effectifs_")
+                effectif_filename=f"effectif_{Path(spec['filename']).stem}.xlsx";effectif_folder=package/effectif_folder_name;effectif_folder.mkdir(parents=True,exist_ok=True);effectif_target=effectif_folder/effectif_filename
+                detail_table=f"_sicorpa_annexe_{index}";effectif_table=f"_sicorpa_effectif_{index}"
+                base=22+73*(index-1)/total;span=73/total;detail_span=span*0.62
+                progress and progress(int(base),f'Calcul DuckDB {index}/{total} : {spec["label"]}')
+                try:
+                    # The expensive business query is evaluated once. Counts and both Excel
+                    # streams reuse the materialized result instead of scanning it four times.
+                    con.execute(f"CREATE TEMP TABLE {detail_table} AS {spec['query']}",spec["params"])
+                    cached_spec={**spec,"query":f"SELECT * FROM {detail_table}"}
+                    con.execute(f"CREATE TEMP TABLE {effectif_table} AS {self._effectif_query(cached_spec)}")
+                    count,impact=con.execute(
+                        f"SELECT COUNT(*),COALESCE(SUM(impact_calcule),0) FROM {detail_table}").fetchone()
+                    concerned=con.execute(f"SELECT COUNT(*) FROM {effectif_table}").fetchone()[0]
+                    progress and progress(int(base),f'Annexe {index}/{total} : {spec["label"]} ({count} lignes, {concerned} concernés)')
+                    self._stream_query(target,f"SELECT * FROM {detail_table}",[],institution,regime,quarter,year,
+                        spec["label"],count,progress,base,detail_span,connection=con)
+                    progress and progress(int(base+detail_span),f"Fichier généré : {spec['folder']}/{spec['filename']}")
+                    self._stream_query(effectif_target,f"SELECT * FROM {effectif_table}",[],institution,regime,quarter,year,
+                        f"Effectif unique — {spec['label']}",concerned,progress,base+detail_span,
+                        span-detail_span,connection=con)
+                    progress and progress(int(base+span),f"Fichier généré : {effectif_folder_name}/{effectif_filename}")
+                    summaries.append({**spec,"count":count,"concerned":concerned,"impact":impact,
+                        "relative_path":str(Path(spec["folder"])/spec["filename"]),
+                        "effectif_path":str(Path(effectif_folder_name)/effectif_filename)})
+                finally:
+                    con.execute(f"DROP TABLE IF EXISTS {effectif_table}")
+                    con.execute(f"DROP TABLE IF EXISTS {detail_table}")
         progress and progress(96,"Finalisation du rapport et des liens")
         report=package/"rapport_final.xlsx";filters=self.db.list_treatment_filters(institution_id,regime);self._write_historical_report(report,institution,regime,quarter,year,summaries,filters)
         progress and progress(97,"Fichier généré : rapport_final.xlsx")
@@ -145,14 +165,16 @@ class ReportService:
         if "présents dans le listing" in text:return "CONFORME_MATRICULE" if "matricule" in text else "CONFORME_NOM"
         return "*"
 
-    def _prepare_impact_specs(self,specs: list[dict],institution_id: str,regime: str,quarter: str,year: int) -> list[dict]:
+    def _prepare_impact_specs(self,specs: list[dict],institution_id: str,regime: str,
+                              quarter: str,year: int,impact_formula_id: str="") -> list[dict]:
         prepared=[]
         for spec in specs:
             rubric=self._impact_rubric(spec["label"])
             if rubric=="AUCUN_IMPACT":formula={"id":"AUCUN_IMPACT","name":"Aucun impact déclaratif","aggregation":"AUCUN_IMPACT","terms":[],"version":1};expression="0"
             else:
                 rank="ROW_NUMBER() OVER(PARTITION BY q.matricule_normalise ORDER BY q.ligne_source)" if "matricule" in spec["label"].lower() else "ROW_NUMBER() OVER(PARTITION BY q.nom_normalise ORDER BY q.ligne_source)"
-                expression,formula=self.db.impact_sql(institution_id,regime,quarter,year,rubric,"q",rank)
+                expression,formula=self.db.impact_sql(institution_id,regime,quarter,year,rubric,
+                    "q",rank,formula_id=impact_formula_id)
             wrapped=f"SELECT q.* EXCLUDE(impact_calcule),CAST(({expression}) AS DECIMAL(38,2)) impact_calcule FROM ({spec['query']}) q"
             prepared.append({**spec,"query":wrapped,"impact_rubric":rubric,"formula":formula})
         return prepared
@@ -174,14 +196,14 @@ class ReportService:
         overview.append(["Source du contrôle","Annexes","Enregistrements","Concernés","Masse / impact"]);self._style_header(overview[4])
         group_labels=[("annexes_listing","Listing de paie"),("annexes_declaratif","Liste déclarative"),("annexes_comparaisons","Comparaisons")]
         for code,label in group_labels:
-            rows=[x for x in summaries if x["group"]==code];overview.append([label,len(rows),sum(x["count"] for x in rows),sum(x["concerned"] for x in rows),sum(x["impact"] for x in rows)])
+            rows=[x for x in summaries if x["group"]==code];overview.append(sanitize_excel_row([label,len(rows),sum(x["count"] for x in rows),sum(x["concerned"] for x in rows),sum(x["impact"] for x in rows)]))
         overview.column_dimensions["A"].width=34;overview.column_dimensions["B"].width=15;overview.column_dimensions["C"].width=20;overview.column_dimensions["D"].width=18;overview.column_dimensions["E"].width=24
         groups=[("annexes_listing","Fichier listing de paie"),("annexes_declaratif","Liste déclarative"),("annexes_comparaisons","Comparaisons")]
         for group,title in groups:
             ws=wb.create_sheet(title);self._title(ws,institution,regime,quarter,year)
             ws.append(["Catégories","Enregistrements","Masse / impact contrôlé","Annexe détaillée","Nombre de concernés","Lien de l’effectif unique"]);self._style_header(ws[4])
             for item in [x for x in summaries if x["group"]==group]:
-                ws.append([item["label"],item["count"],item["impact"],item["relative_path"],item["concerned"],item["effectif_path"]])
+                ws.append(sanitize_excel_row([item["label"],item["count"],item["impact"],item["relative_path"],item["concerned"],item["effectif_path"]]))
                 detail_cell=ws.cell(ws.max_row,4);detail_cell.hyperlink=item["relative_path"];detail_cell.style="Hyperlink"
                 effectif_cell=ws.cell(ws.max_row,6);effectif_cell.hyperlink=item["effectif_path"];effectif_cell.style="Hyperlink"
             ws.freeze_panes="A5";ws.auto_filter.ref=f"A4:F{ws.max_row}";ws.column_dimensions["A"].width=58;ws.column_dimensions["B"].width=18;ws.column_dimensions["C"].width=24;ws.column_dimensions["D"].width=55;ws.column_dimensions["E"].width=22;ws.column_dimensions["F"].width=58
@@ -191,38 +213,42 @@ class ReportService:
             formula=item.get("formula",{});key=(item.get("impact_rubric"),formula.get("id"))
             if key in seen:continue
             seen.add(key);expression=" + ".join(f"{term.get('coefficient',0):g} × {term.get('code','')}" for term in formula.get("terms",[])) or "0"
-            formula_ws.append([item.get("impact_rubric"),formula.get("name"),formula.get("version"),formula.get("aggregation"),expression])
+            formula_ws.append(sanitize_excel_row([item.get("impact_rubric"),formula.get("name"),formula.get("version"),formula.get("aggregation"),expression]))
         for letter,width in zip("ABCDE",[28,34,12,30,65]):formula_ws.column_dimensions[letter].width=width
         filter_ws=wb.create_sheet("Filtres du listing");filter_ws.append(["Colonne","Opérateur","Contenu"]);self._style_header(filter_ws[1])
-        for _,column,operator,value in (filters or []):filter_ws.append([column,operator,value])
+        for _,column,operator,value in (filters or []):filter_ws.append(sanitize_excel_row([column,operator,value]))
         if not filters:filter_ws.append(["Aucun filtre","—","Tout le listing de l’institution est traité"])
         filter_ws.column_dimensions["A"].width=34;filter_ws.column_dimensions["B"].width=20;filter_ws.column_dimensions["C"].width=50
         note=wb.create_sheet("Note méthodologique");note.append(["NOTE MÉTHODOLOGIQUE"]);note["A1"].font=Font(bold=True,size=15,color="12355B")
-        for line in [f"Institution : {institution}",f"Régime : {regime} — {quarter} {year}","La cohorte de contrôle contient uniquement les agents déclarés présents dans le listing filtré.","Cette cohorte est recherchée dans tout le listing trimestriel hors du périmètre filtré, y compris dans la même institution.","Le nombre de concernés correspond à l’effectif unique de chaque rubrique; son fichier est lié dans le rapport.","NU, N.U et leurs variantes sont exclus des doublons de matricule.","Les annexes par matricule et par nom sont des méthodes de contrôle parallèles et ne doivent pas être additionnées.","Les impacts sont potentiels et doivent être confirmés par un contrôle métier."]:note.append([line])
+        for line in [f"Institution : {institution}",f"Régime : {regime} — {quarter} {year}","La cohorte de contrôle contient uniquement les agents déclarés présents dans le listing filtré.","Cette cohorte est recherchée dans tout le listing trimestriel hors du périmètre filtré, y compris dans la même institution.","Le nombre de concernés correspond à l’effectif unique de chaque rubrique; son fichier est lié dans le rapport.","NU, N.U et leurs variantes sont exclus des doublons de matricule.","Les annexes par matricule et par nom sont des méthodes de contrôle parallèles et ne doivent pas être additionnées.","Les impacts sont potentiels et doivent être confirmés par un contrôle métier."]:note.append([sanitize_excel_value(line)])
         note.column_dimensions["A"].width=120
         temporary=path.with_name(f".{path.stem}.part.xlsx")
         try:wb.save(temporary);os.replace(temporary,path)
         finally:
             if temporary.exists():temporary.unlink()
 
-    def _stream_query(self,path: Path,query: str,params: list,institution: str,regime: str,quarter: str,year: int,status: str,total_rows: int = 0,progress: Progress = None,progress_base: float = 0,progress_span: float = 0) -> None:
+    def _stream_query(self,path: Path,query: str,params: list,institution: str,regime: str,quarter: str,year: int,status: str,total_rows: int = 0,progress: Progress = None,progress_base: float = 0,progress_span: float = 0,connection=None) -> None:
         wb=Workbook(write_only=True);ws=wb.create_sheet("Données");ws.freeze_panes="A6"
         title=WriteOnlyCell(ws,"ANNEXE DE CONTRÔLE DE LA PAIE");title.font=Font(bold=True,size=15,color="FFFFFF");title.fill=PatternFill("solid",fgColor="12355B")
-        ws.append([title]);ws.append([f"Institution : {institution}"]);ws.append([f"Régime : {regime} — Période : {quarter} {year}"]);ws.append([f"Catégorie : {status}"])
-        with self.db.connect() as con:
+        ws.append([title]);ws.append([sanitize_excel_value(f"Institution : {institution}")]);ws.append([sanitize_excel_value(f"Régime : {regime} — Période : {quarter} {year}")]);ws.append([sanitize_excel_value(f"Catégorie : {status}")])
+        def write_rows(con):
             cursor=con.execute(query,params);headers=[item[0] for item in cursor.description];styled=[]
             for header in headers:
-                cell=WriteOnlyCell(ws,header);cell.font=Font(bold=True,color="FFFFFF");cell.fill=PatternFill("solid",fgColor="1677FF");cell.alignment=Alignment(horizontal="center");styled.append(cell)
+                cell=WriteOnlyCell(ws,sanitize_excel_value(header));cell.font=Font(bold=True,color="FFFFFF");cell.fill=PatternFill("solid",fgColor="1677FF");cell.alignment=Alignment(horizontal="center");styled.append(cell)
             ws.append(styled)
             written=0
             while True:
-                batch=cursor.fetchmany(1000)
+                batch=cursor.fetchmany(5000)
                 if not batch:break
-                for row in batch:ws.append(list(row))
+                for row in batch:ws.append(sanitize_excel_row(row))
                 written += len(batch)
                 if progress and total_rows:
                     value=int(progress_base+progress_span*min(1,written/total_rows))
                     progress(value,f"{status} : {written:,}/{total_rows:,} lignes".replace(","," "))
+        if connection is None:
+            with self.db.connect() as con:write_rows(con)
+        else:
+            write_rows(connection)
         temporary=path.with_name(f".{path.stem}.part.xlsx")
         try:
             wb.save(temporary)
@@ -232,7 +258,7 @@ class ReportService:
 
     @staticmethod
     def _title(ws,institution: str,regime: str,quarter: str,year: int) -> None:
-        ws.merge_cells("A1:F1");cell=ws["A1"];cell.value="RAPPORT FINAL DE CONTRÔLE ET RAPPROCHEMENT DE LA PAIE";cell.fill=PatternFill("solid",fgColor="12355B");cell.font=Font(color="FFFFFF",bold=True,size=15);cell.alignment=Alignment(horizontal="center");ws.row_dimensions[1].height=30;ws["A2"]=f"Institution : {institution}";ws["A3"]=f"Régime : {regime} — Période : {quarter} {year}"
+        ws.merge_cells("A1:F1");cell=ws["A1"];cell.value="RAPPORT FINAL DE CONTRÔLE ET RAPPROCHEMENT DE LA PAIE";cell.fill=PatternFill("solid",fgColor="12355B");cell.font=Font(color="FFFFFF",bold=True,size=15);cell.alignment=Alignment(horizontal="center");ws.row_dimensions[1].height=30;ws["A2"]=sanitize_excel_value(f"Institution : {institution}");ws["A3"]=sanitize_excel_value(f"Régime : {regime} — Période : {quarter} {year}")
 
     @staticmethod
     def _style_header(cells) -> None:

@@ -5,6 +5,8 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+from .spreadsheet_utils import sanitize_xml_text
+
 
 def _money(value) -> str:
     amount=Decimal(str(value or 0))
@@ -36,6 +38,7 @@ def generate_interpretation_letter(path: Path, institution: str, regime: str, qu
     except ImportError as exc:
         raise RuntimeError("La génération de la lettre Word nécessite python-docx. Installez les dépendances avec : python -m pip install -r requirements.txt") from exc
 
+    institution=sanitize_xml_text(institution);regime=sanitize_xml_text(regime);quarter=sanitize_xml_text(quarter)
     NAVY=RGBColor(18,53,91);BLUE=RGBColor(22,119,255);INK=RGBColor(36,50,71);MUTED=RGBColor(97,113,135);WHITE=RGBColor(255,255,255)
     doc=Document();section=doc.sections[0]
     section.page_width=Inches(8.5);section.page_height=Inches(11)
@@ -128,7 +131,7 @@ def generate_interpretation_letter(path: Path, institution: str, regime: str, qu
     for item in summaries:
         formula=item.get("formula",{})
         if formula and formula.get("id") not in {entry[0] for entry in formulas}:formulas.append((formula.get("id"),formula.get("name","Formule"),formula.get("version",1)))
-    formula_trace=(" Formules appliquées : "+"; ".join(f"{name} (v{version})" for _identifier,name,version in formulas)+"; détails dans la feuille « Formules d’impact ».") if formulas else ""
+    formula_trace=sanitize_xml_text((" Formules appliquées : "+"; ".join(f"{name} (v{version})" for _identifier,name,version in formulas)+"; détails dans la feuille « Formules d’impact ».") if formulas else "")
 
     doc.add_heading("4. Recommandations",level=1)
     recommendations=[

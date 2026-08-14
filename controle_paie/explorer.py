@@ -6,6 +6,7 @@ from typing import Optional
 import pandas as pd
 
 from .database import Database
+from .spreadsheet_utils import sanitize_excel_dataframe
 
 
 class DataExplorerService:
@@ -59,8 +60,61 @@ class DataExplorerService:
         filters["limit"] = min(int(filters.get("limit", 10_000)), 100_000)
         data = self.read(**filters)
         path = Path(target); path.parent.mkdir(parents=True, exist_ok=True)
-        data.to_excel(path, index=False, engine="openpyxl")
+        sanitize_excel_dataframe(data).to_excel(path, index=False, engine="openpyxl")
         return path
+
+    def delete_rows(self, table: str, column: str = "", operator: str = "", value: str = "",
+                    column2: str = "", operator2: str = "", value2: str = "") -> int:
+        self._require_table(table)
+        if not column or not operator:
+            raise ValueError("Sélectionnez une colonne et un opérateur pour filtrer la table.")
+        query = f'DELETE FROM "{table}"'
+        params = []
+        clauses = []
+        filters = [
+            (column, operator, value),
+            (column2, operator2, value2),
+        ]
+        for col, op, raw_value in filters:
+            if not col or not op:
+                continue
+            quoted = '"' + col.replace('"', '""') + '"'
+            clause_map = {
+                "égal à": f"CAST({quoted} AS VARCHAR) = ?",
+                "différent de": f"CAST({quoted} AS VARCHAR) <> ?",
+                "contient": f"CAST({quoted} AS VARCHAR) ILIKE ?",
+                "commence par": f"CAST({quoted} AS VARCHAR) ILIKE ?",
+                ">": f"TRY_CAST({quoted} AS DOUBLE) > TRY_CAST(? AS DOUBLE)",
+                ">=": f"TRY_CAST({quoted} AS DOUBLE) >= TRY_CAST(? AS DOUBLE)",
+                "<": f"TRY_CAST({quoted} AS DOUBLE) < TRY_CAST(? AS DOUBLE)",
+                "<=": f"TRY_CAST({quoted} AS DOUBLE) <= TRY_CAST(? AS DOUBLE)",
+                "est vide": f"({quoted} IS NULL OR CAST({quoted} AS VARCHAR) = '')",
+                "n’est pas vide": f"({quoted} IS NOT NULL AND CAST({quoted} AS VARCHAR) <> '')",
+            }
+            if op not in clause_map:
+                raise ValueError("Opérateur de filtre inconnu.")
+            clause = clause_map[op]
+            if op not in {"est vide", "n’est pas vide"}:
+                if op == "contient":
+                    params.append(f"%{raw_value}%")
+                elif op == "commence par":
+                    params.append(f"{raw_value}%")
+                else:
+                    params.append(str(raw_value))
+            clauses.append(clause)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self.db.connect() as connection:
+            count = 0
+            if clauses:
+                count = connection.execute(f'SELECT COUNT(*) FROM "{table}" WHERE ' + " AND ".join(clauses), params).fetchone()[0]
+            else:
+                count = connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            connection.execute(query, params)
+            return int(count)
+
+    def delete_scope(self, institution_id: str, regime: str, quarter: str, year: int | str) -> dict:
+        return self.db.delete_data_scope(institution_id, regime, quarter, year)
 
     def _require_table(self, table: str) -> None:
         if table not in self.list_tables():

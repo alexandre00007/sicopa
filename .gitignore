@@ -29,6 +29,7 @@ Thumbs.db
 *.duckdb
 *.duckdb.wal
 *.db.wal
+.duckdb_tmp/
 traitement/
 
 # Données métier sensibles importées
