@@ -57,11 +57,12 @@ class PayrollAppWithMatchingDeletion(PayrollAppWithPeriodAwareRawFusion):
         actions.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         self.matching_delete_status = tk.StringVar(value="Sélectionnez un rapprochement à supprimer.")
         ttk.Label(actions, textvariable=self.matching_delete_status, style="PageHint.TLabel").pack(side="left")
-        ttk.Button(
+        self.matching_delete_button = ttk.Button(
             actions,
             text="Supprimer le rapprochement",
             command=self._delete_selected_matching,
-        ).pack(side="right")
+        )
+        self.matching_delete_button.pack(side="right")
 
         self._matching_history_ids = {}
         self._refresh_matching_history()
@@ -90,6 +91,9 @@ class PayrollAppWithMatchingDeletion(PayrollAppWithPeriodAwareRawFusion):
         self.matching_delete_status.set(f"{len(rows)} rapprochement(s) disponible(s).")
 
     def _delete_selected_matching(self):
+        if getattr(self, "busy", False):
+            messagebox.showwarning("Traitement en cours", "Attendez la fin du traitement actuel avant de lancer une suppression.")
+            return
         selected = self.matching_history_tree.selection()
         if not selected:
             messagebox.showwarning("Suppression rapprochement", "Sélectionnez d'abord un rapprochement.")
@@ -123,18 +127,55 @@ class PayrollAppWithMatchingDeletion(PayrollAppWithPeriodAwareRawFusion):
             ):
                 return
 
-        try:
+        self.matching_delete_button.configure(state="disabled")
+        self.matching_delete_status.set("Suppression en cours… sauvegarde de sécurité puis nettoyage du rapprochement.")
+        self._open_generation_dialog(
+            "Suppression du rapprochement",
+            f"Institution : {info['institution']}  •  Régime : {info['regime']}  •  Période : {info['quarter']} {info['year']}\n"
+            "Une sauvegarde de sécurité est créée avant la suppression.",
+            "Étapes de la suppression",
+            True,
+        )
+        self._progress(10, "Préparation de la sauvegarde de sécurité")
+
+        def task():
+            self._progress(25, "Sauvegarde de la base DuckDB")
             backup = backup_database(
                 self.config_data.database_path,
                 self.config_data.backups_dir,
                 "avant_suppression_rapprochement",
             )
+            self._progress(60, "Suppression des résultats du rapprochement")
             result = self.matching_deletion.delete_run(execution_id)
-        except Exception as exc:
-            messagebox.showerror("Suppression rapprochement", str(exc))
-            return
+            self._progress(90, "Vérification et actualisation de l'historique")
+            return {"result": result, "backup": backup}
 
+        self._background(
+            task,
+            self._matching_deleted_with_loader,
+            refresh_data=True,
+            operation="Suppression d’un rapprochement",
+        )
+
+    def _matching_deleted_with_loader(self, payload):
+        result = payload["result"]
+        backup = payload["backup"]
         self._refresh_matching_history()
+        if hasattr(self, "matching_delete_button"):
+            self.matching_delete_button.configure(state="normal")
+        self.matching_delete_status.set(f"Suppression terminée : {result['deleted']} ligne(s) supprimée(s).")
+
+        if self.generation_window and self.generation_window.winfo_exists():
+            self.generation_title.set("Rapprochement supprimé avec succès")
+            self.generation_status.set("100% — Sauvegarde créée et résultats supprimés de DuckDB.")
+            self.generation_bar.stop()
+            self.generation_bar.configure(mode="determinate")
+            self.generation_bar["value"] = 100
+            self.generated_files.insert("end", f"✓  {result['deleted']} ligne(s) supprimée(s)")
+            self.generated_files.insert("end", f"✓  Sauvegarde : {backup}")
+            self.generated_files.see("end")
+            self.generation_close.configure(state="normal")
+
         messagebox.showinfo(
             "Suppression terminée",
             f"{result['deleted']} ligne(s) de rapprochement supprimée(s).\n\nSauvegarde préalable :\n{backup}",
