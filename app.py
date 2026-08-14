@@ -2,7 +2,7 @@ import logging
 import tkinter as tk
 from tkinter import messagebox
 
-from controle_paie.matching_deletion_app import PayrollAppWithMatchingDeletion as PayrollApp
+from controle_paie.flexible_access_app import PayrollAppWithFlexibleAccess as PayrollApp
 
 
 if __name__ == "__main__":
