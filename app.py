@@ -2,7 +2,7 @@ import logging
 import tkinter as tk
 from tkinter import messagebox
 
-from controle_paie.sql_console_app import PayrollAppWithSqlConsole as PayrollApp
+from controle_paie.sql_console_templates_app import PayrollAppWithSqlTemplates as PayrollApp
 
 
 if __name__ == "__main__":
