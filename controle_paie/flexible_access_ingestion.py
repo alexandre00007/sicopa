@@ -12,6 +12,7 @@ class FlexibleAccessIngestionService(IngestionService):
 
     Les colonnes nouvelles sont ajoutées automatiquement à la destination.
     Les colonnes historiques absentes du nouvel import sont remplies avec NULL.
+    Les colonnes configurées obligatoires deviennent des avertissements de qualité.
     """
 
     @staticmethod
@@ -19,7 +20,6 @@ class FlexibleAccessIngestionService(IngestionService):
         return '"' + str(name).replace('"', '""') + '"'
 
     def _sync_raw_schema(self, con, destination: str) -> dict:
-        """Aligne le schéma de destination sur raw_frame et retourne le diagnostic."""
         dest_q = self._quote_identifier(destination)
         exists = con.execute(
             "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='main' AND table_name=?",
@@ -36,21 +36,19 @@ class FlexibleAccessIngestionService(IngestionService):
             return {"added": [], "missing": []}
 
         destination_columns = {
-            row[0]: row[1]
-            for row in con.execute(f"DESCRIBE {dest_q}").fetchall()
+            row[0]: row[1] for row in con.execute(f"DESCRIBE {dest_q}").fetchall()
         }
         source_columns = {
-            row[0]: row[1]
-            for row in con.execute("DESCRIBE raw_frame").fetchall()
+            row[0]: row[1] for row in con.execute("DESCRIBE raw_frame").fetchall()
         }
 
         added = []
         for column, data_type in source_columns.items():
             if column in destination_columns:
                 continue
-            col_q = self._quote_identifier(column)
-            # Le type est produit par DuckDB lui-même via DESCRIBE raw_frame.
-            con.execute(f"ALTER TABLE {dest_q} ADD COLUMN {col_q} {data_type}")
+            con.execute(
+                f"ALTER TABLE {dest_q} ADD COLUMN {self._quote_identifier(column)} {data_type}"
+            )
             destination_columns[column] = data_type
             added.append(column)
 
@@ -90,13 +88,23 @@ class FlexibleAccessIngestionService(IngestionService):
             column for column in self.db.required_source_columns(regime, "ACCESS")
             if column not in raw.columns
         ]
+        warnings = []
         if missing_required:
-            raise ValueError(
-                "Colonnes Access obligatoires absentes : " + ", ".join(missing_required)
+            warnings.append("Colonnes configurées absentes : " + ", ".join(missing_required))
+            progress and progress(
+                35,
+                "Import flexible : colonnes absentes acceptées et complétées avec des valeurs neutres",
             )
 
         progress and progress(-1, "Standardisation et validation des colonnes Access")
         standard = standardize_payroll(raw, metadata, mapping)
+        usable_mat = int((~standard["matricule_normalise"].isin(["", "NU"])).sum())
+        usable_name = int((standard["nom_normalise"] != "").sum())
+        if not usable_mat:
+            warnings.append("Aucun matricule exploitable")
+        if not usable_name:
+            warnings.append("Aucun nom exploitable")
+
         destination = self.config.regimes[regime].raw_table
         progress and progress(50, f"Préparation flexible de {destination}")
 
@@ -113,10 +121,7 @@ class FlexibleAccessIngestionService(IngestionService):
                 schema = self._sync_raw_schema(con, destination)
 
                 if schema["added"]:
-                    progress and progress(
-                        60,
-                        "Colonnes ajoutées au RAW : " + ", ".join(schema["added"]),
-                    )
+                    progress and progress(60, "Colonnes ajoutées au RAW : " + ", ".join(schema["added"]))
                 elif schema["missing"]:
                     progress and progress(
                         60,
@@ -124,7 +129,6 @@ class FlexibleAccessIngestionService(IngestionService):
                     )
 
                 dest_q = self._quote_identifier(destination)
-                # BY NAME aligne les colonnes par nom et complète automatiquement les absentes par NULL.
                 con.execute(
                     f"INSERT INTO {dest_q} BY NAME "
                     "SELECT *, ?::VARCHAR AS execution_id, ?::VARCHAR AS trimestre, ?::INTEGER AS annee "
@@ -138,15 +142,16 @@ class FlexibleAccessIngestionService(IngestionService):
                 con.register("standard_frame", standard)
                 con.execute("INSERT INTO paie_standardisee BY NAME SELECT * FROM standard_frame")
                 progress and progress(90, "Données standardisées écrites — finalisation du journal")
+                message = " ; ".join(warnings) if warnings else None
                 con.execute(
                     """INSERT INTO journal_executions
                        (execution_id,type_operation,fichier_source,table_source,table_destination,
                         institution_id,regime,trimestre,annee,mode_chargement,lignes_lues,
-                        lignes_chargees,statut,date_fin)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+                        lignes_chargees,statut,message,date_fin)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
                     [execution_id, "IMPORT_ACCESS", str(path), table, destination,
-                     institution_id, regime, quarter, year, mode, raw_count,
-                     len(standard), "TERMINE"],
+                     institution_id, regime, quarter, year, mode, raw_count, len(standard),
+                     "TERMINE_AVEC_AVERTISSEMENTS" if warnings else "TERMINE", message],
                 )
                 con.execute("COMMIT")
             except Exception:
@@ -162,5 +167,7 @@ class FlexibleAccessIngestionService(IngestionService):
                 con.execute("DELETE FROM journal_executions WHERE execution_id=?", [execution_id])
                 raise
 
+        if warnings:
+            progress and progress(95, "Import terminé avec avertissements : " + " ; ".join(warnings))
         progress and progress(100, f"Table Access chargée : {len(standard):,} lignes".replace(",", " "))
         return execution_id
