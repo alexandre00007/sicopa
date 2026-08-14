@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from .analysis_versioning import AnalysisVersionRegistry
+from .identity_policy import IDENTITY_ALGORITHM_VERSION
+from .raw_fusion_enhanced import EnhancedRawFusionService
+
+
+class VersionedEnhancedRawFusionService(EnhancedRawFusionService):
+    ANALYSIS_TYPE = "FUSION_MULTI_REGIMES"
+
+    def __init__(self, db):
+        super().__init__(db)
+        self.version_registry = AnalysisVersionRegistry(db)
+
+    def _summary_payload(self, fusion_id: str) -> dict:
+        return {"statuts": [list(row) for row in self.summary(fusion_id)]}
+
+    def create_fusion(self, table_names, quarter, year, suffix="", progress=None):
+        info = super().create_fusion(table_names, quarter, year, suffix, progress=progress)
+        self.version_registry.record(
+            self.ANALYSIS_TYPE,
+            info["id"],
+            action="ANALYSE",
+            parameters={"tables": list(table_names), "quarter": quarter, "year": int(year), "suffix": suffix},
+            summary=self._summary_payload(info["id"]),
+            algorithm_version=IDENTITY_ALGORITHM_VERSION,
+        )
+        return info
+
+    def reanalyze(self, fusion_id: str, progress=None) -> dict:
+        # Snapshot explicite de la version qui va être remplacée.
+        before = self._summary_payload(fusion_id)
+        self.version_registry.record(
+            self.ANALYSIS_TYPE,
+            fusion_id,
+            action="SNAPSHOT_AVANT_REANALYSE",
+            summary=before,
+            algorithm_version=IDENTITY_ALGORITHM_VERSION,
+        )
+        info = super().reanalyze(fusion_id, progress=progress)
+        self.version_registry.record(
+            self.ANALYSIS_TYPE,
+            fusion_id,
+            action="REANALYSE",
+            parameters={"quarter": info["quarter"], "year": int(info["year"]), "table": info["table"]},
+            summary=self._summary_payload(fusion_id),
+            algorithm_version=IDENTITY_ALGORITHM_VERSION,
+        )
+        return info
+
+    def version_history(self, fusion_id: str):
+        return self.version_registry.history(self.ANALYSIS_TYPE, fusion_id)
