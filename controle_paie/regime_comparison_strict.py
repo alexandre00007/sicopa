@@ -160,8 +160,8 @@ class StrictRegimeComparisonService(RuntimeRegimeComparisonService):
                     WHERE NOT EXISTS (
                       SELECT 1 FROM cmp_pairs p
                       WHERE (p.match_type='EXACT' AND p.matricule_normalise=b.matricule_normalise AND p.nom_normalise=b.nom_normalise)
-                         OR (p.match_type='MATRICULE_INCOHERENT' AND p.matricule_normalise=b.matricule_normalise)
-                         OR (p.match_type IN ('NOM_PROBABLE','NOM_MATRICULE_DIFFERENT') AND p.nom_normalise=b.nom_normalise)
+                         OR (p.match_type IN ('MATRICULE_INCOHERENT','AMBIGU_MATRICULE') AND p.matricule_normalise=b.matricule_normalise)
+                         OR (p.match_type IN ('NOM_PROBABLE','NOM_MATRICULE_DIFFERENT','AMBIGU_NOM') AND p.nom_normalise=b.nom_normalise)
                     )""", [comparison_id])
 
                 progress and progress(70, "Classification des écarts sur identités fiables")
@@ -200,8 +200,8 @@ class StrictRegimeComparisonService(RuntimeRegimeComparisonService):
                 summary = con.execute("""SELECT
                     SUM(CASE WHEN occurrences_a>0 AND occurrences_b>0 AND cle_type='MATRICULE+NOM'
                       AND statut NOT IN ('MATCH_AMBIGU_MATRICULE','MATCH_AMBIGU_NOM','IDENTITE_INCOHERENTE','NOM_MATRICULE_DIFFERENT') THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN occurrences_a>0 AND occurrences_b=0 THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN occurrences_b>0 AND occurrences_a=0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN statut='UNIQUEMENT_REGIME_A' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN statut='UNIQUEMENT_REGIME_B' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN double_paiement THEN 1 ELSE 0 END),
                     SUM(CASE WHEN ecart_financier THEN 1 ELSE 0 END),
                     SUM(CASE WHEN ecart_administratif THEN 1 ELSE 0 END),
