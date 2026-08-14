@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
-import unicodedata
 import uuid
 from typing import Dict, Iterable, Optional
 
 import pandas as pd
 
+from .agent_identity import normalize_identity, normalize_series
 from .config import CANONICAL_ALIASES
 
 
@@ -22,11 +21,8 @@ DECLARATION_ALIASES = {
 
 
 def normalize_identifier(value: object) -> str:
-    if value is None or pd.isna(value):
-        return ""
-    text = unicodedata.normalize("NFKD", str(value))
-    text = "".join(c for c in text if not unicodedata.combining(c)).upper()
-    return re.sub(r"[^A-Z0-9]", "", text)
+    """Compatibilité historique : délègue au moteur commun d'identité."""
+    return normalize_identity(value)
 
 
 def infer_mapping(columns: Iterable[str], explicit: Optional[Dict[str, str]] = None,
@@ -57,11 +53,10 @@ def _series(data: pd.DataFrame, name: str, default: object = "") -> pd.Series:
 def _money(data: pd.DataFrame, name: str) -> pd.Series:
     return pd.to_numeric(_series(data, name, 0), errors="coerce").fillna(0)
 
+
 def _normalize_series(values: pd.Series) -> pd.Series:
-    """Vectorized equivalent of normalize_identifier for large imports."""
-    return (values.fillna("").astype(str).str.normalize("NFKD")
-            .str.upper().str.encode("ascii",errors="ignore").str.decode("ascii")
-            .str.replace(r"[^A-Z0-9]","",regex=True))
+    """Compatibilité historique : normalisation vectorisée centralisée."""
+    return normalize_series(values)
 
 
 def standardize_payroll(data: pd.DataFrame, metadata: Dict, mapping: Optional[Dict[str, str]] = None) -> pd.DataFrame:
