@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tkinter as tk
 from tkinter import messagebox, ttk
 
-from .runtime import backup_database
+from .runtime import APP_NAME, APP_VERSION, backup_database
 from .ui import PayrollApp, validate_scope_values
 
 
@@ -92,12 +93,110 @@ class PayrollDeletionService:
 
 
 class PayrollAppWithPayrollDeletion(PayrollApp):
-    """PayrollApp enrichie d'une suppression securisee dans l'onglet Paie Access."""
+    """PayrollApp enrichie de la suppression de paie et de pages principales scrollables."""
 
     def __init__(self, *args, **kwargs):
         self.payroll_deletion = None
         super().__init__(*args, **kwargs)
         self.payroll_deletion = PayrollDeletionService(self.db)
+
+    def _make_scrollable_tab(self):
+        """Create a notebook page with a permanent vertical scrollbar and a padded content frame."""
+        outer = ttk.Frame(self.notebook)
+        outer.rowconfigure(0, weight=1)
+        outer.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(outer, background="#F3F6FA", highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        body = ttk.Frame(canvas, padding=20)
+        window_id = canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def update_scrollregion(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def fit_width(event):
+            canvas.itemconfigure(window_id, width=event.width)
+
+        def wheel(event):
+            if isinstance(event.widget, (ttk.Treeview, tk.Text, tk.Listbox)):
+                return
+            if getattr(event, "num", None) == 4:
+                delta = -3
+            elif getattr(event, "num", None) == 5:
+                delta = 3
+            else:
+                raw = getattr(event, "delta", 0)
+                delta = -1 * int(raw / 120) if raw else 0
+                if raw and delta == 0:
+                    delta = -1 if raw > 0 else 1
+            if delta:
+                canvas.yview_scroll(delta, "units")
+
+        body.bind("<Configure>", update_scrollregion)
+        canvas.bind("<Configure>", fit_width)
+        outer.bind("<Enter>", lambda _e: (
+            canvas.bind_all("<MouseWheel>", wheel),
+            canvas.bind_all("<Button-4>", wheel),
+            canvas.bind_all("<Button-5>", wheel),
+        ))
+        outer.bind("<Leave>", lambda _e: (
+            canvas.unbind_all("<MouseWheel>"),
+            canvas.unbind_all("<Button-4>"),
+            canvas.unbind_all("<Button-5>"),
+        ))
+        return outer, body
+
+    def _build_ui(self):
+        header = tk.Frame(self, background="#12355B", padx=24, pady=17)
+        header.pack(fill="x")
+        identity = tk.Frame(header, background="#12355B")
+        identity.pack(side="left")
+        ttk.Label(identity, text="SICORPA", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(identity, text="Système Intégré de Contrôle et de Rapprochement de la Paie", style="Subtitle.TLabel").pack(anchor="w")
+        self.trial_indicator = tk.StringVar(value=self.trial_status.short_label)
+        tk.Label(header, textvariable=self.trial_indicator, background="#8A4B08", foreground="white",
+                 font=("DejaVu Sans", 9, "bold"), padx=12, pady=8).pack(side="right", padx=(8, 0))
+        tk.Label(header, text=f"●  DuckDB connecté  •  v{APP_VERSION}\n{self.config_data.database_path}",
+                 background="#0D2947", foreground="#D7E9FA", padx=14, pady=8).pack(side="right")
+
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=22, pady=(18, 10))
+
+        page_specs = [
+            ("dashboard_page", "  Tableau de bord  "),
+            ("access_page", "  1. Paie Access  "),
+            ("excel_page", "  2. Déclaratif Excel  "),
+            ("match_page", "  3. Rapprochement  "),
+            ("explorer_page", "  Explorer les données  "),
+            ("admin_page", "  Configuration  "),
+            ("mapping_page", "  Mapping colonnes  "),
+            ("finance_page", "  Calculs financiers  "),
+        ]
+        self._tab_shells = {}
+        for attribute, label in page_specs:
+            outer, body = self._make_scrollable_tab()
+            self._tab_shells[attribute] = outer
+            setattr(self, attribute, body)
+            self.notebook.add(outer, text=label)
+
+        self._build_dashboard()
+        self._build_access()
+        self._build_excel()
+        self._build_matching()
+        self._build_explorer()
+        self._build_admin()
+        self._build_mapping()
+        self._build_finance()
+
+        footer = ttk.Frame(self, padding=(22, 7, 22, 14))
+        footer.pack(fill="x")
+        self.progress = ttk.Progressbar(footer, maximum=100)
+        self.progress.pack(side="left", fill="x", expand=True)
+        self.status = tk.StringVar(value="Prêt")
+        ttk.Label(footer, textvariable=self.status, width=42).pack(side="left", padx=12)
+        self._refresh_dashboard()
 
     def _build_access(self):
         super()._build_access()
