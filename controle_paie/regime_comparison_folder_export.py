@@ -5,7 +5,9 @@ import re
 
 from openpyxl import Workbook
 from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
+from .regime_comparison_details import DETAIL_HEADERS, list_detailed_results
 from .spreadsheet_utils import sanitize_excel_row
 
 
@@ -23,12 +25,6 @@ class RegimeComparisonFolderExporter:
         ("08_paiements_multiples.xlsx", "Paiements multiples", "PAIEMENT_MULTIPLE"),
         ("09_identites_incoherentes.xlsx", "Identités incohérentes", "IDENTITE_INCOHERENTE"),
         ("10_communs_identiques.xlsx", "Communs identiques", "COMMUN_IDENTIQUE"),
-    ]
-
-    HEADERS = [
-        "Statut", "Clé", "Matricule", "Nom", "Occurrences A", "Occurrences B",
-        "Brut A", "Brut B", "Écart brut", "Net A", "Net B", "Écart net", "Écart %",
-        "Grade A", "Grade B", "Catégorie A", "Catégorie B", "Affectation A", "Affectation B", "Diagnostic",
     ]
 
     def __init__(self, service):
@@ -52,8 +48,8 @@ class RegimeComparisonFolderExporter:
 
         total = len(self.EXPORTS)
         for index, (filename, title, status) in enumerate(self.EXPORTS, 1):
-            progress and progress(10 + int(85 * index / total), f"Export : {title}")
-            rows = self.service.list_results(comparison_id, status, 10000)
+            progress and progress(10 + int(85 * index / total), f"Export détaillé : {title}")
+            rows = list_detailed_results(self.service, comparison_id, status, 50000)
             self._write_results(target / filename, title, summary, rows)
 
         with self.service.db.connect() as con:
@@ -61,7 +57,7 @@ class RegimeComparisonFolderExporter:
                 "UPDATE comparaisons_regimes SET fichier_export=? WHERE comparaison_id=?",
                 [str(target), comparison_id],
             )
-        progress and progress(100, "Toutes les analyses ont été exportées")
+        progress and progress(100, "Toutes les analyses détaillées ont été exportées")
         return str(target)
 
     def _write_summary(self, summary: dict, path: Path) -> None:
@@ -69,47 +65,53 @@ class RegimeComparisonFolderExporter:
         ws = wb.active
         ws.title = "Synthèse"
         ws.append(["Indicateur", "Valeur"])
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
+        for cell in ws[1]: cell.font = Font(bold=True)
         rows = [
             ("Comparaison", f"{summary['regime_a']} vs {summary['regime_b']}"),
             ("Période", f"{summary['quarter']} {summary['year']}"),
-            ("Lignes régime A", summary["rows_a"]),
-            ("Lignes régime B", summary["rows_b"]),
+            ("Lignes régime A", summary["rows_a"]), ("Lignes régime B", summary["rows_b"]),
             ("Agents communs / payés dans les deux", summary["common"]),
-            ("Uniquement régime A", summary["only_a"]),
-            ("Uniquement régime B", summary["only_b"]),
-            ("Écarts financiers", summary["financial"]),
-            ("Écarts administratifs", summary["administrative"]),
-            ("Masse régime A", summary["mass_a"]),
-            ("Masse régime B", summary["mass_b"]),
+            ("Uniquement régime A", summary["only_a"]), ("Uniquement régime B", summary["only_b"]),
+            ("Écarts financiers", summary["financial"]), ("Écarts administratifs", summary["administrative"]),
+            ("Masse régime A", summary["mass_a"]), ("Masse régime B", summary["mass_b"]),
             ("Écart de masse", (summary["mass_a"] or 0) - (summary["mass_b"] or 0)),
-            ("Seuil financier", summary["threshold_amount"]),
-            ("Seuil pourcentage", summary["threshold_percent"]),
+            ("Seuil financier", summary["threshold_amount"]), ("Seuil pourcentage", summary["threshold_percent"]),
+            ("Contenu des annexes", "Colonnes administratives, financières et sources détaillées des régimes A et B"),
         ]
-        for row in rows:
-            ws.append(list(sanitize_excel_row(row)))
-        ws.freeze_panes = "A2"
-        ws.column_dimensions["A"].width = 38
-        ws.column_dimensions["B"].width = 30
+        for row in rows: ws.append(list(sanitize_excel_row(row)))
+        ws.freeze_panes = "A2"; ws.column_dimensions["A"].width = 38; ws.column_dimensions["B"].width = 72
         wb.save(path)
 
     def _write_results(self, path: Path, title: str, summary: dict, rows: list[tuple]) -> None:
         wb = Workbook()
         ws = wb.active
-        ws.title = "Résultats"
-        ws.append(self.HEADERS)
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-        for row in rows:
-            ws.append(list(sanitize_excel_row(row)))
+        ws.title = "Annexe détaillée"
+        ws.append(DETAIL_HEADERS)
+        for cell in ws[1]: cell.font = Font(bold=True)
+        for row in rows: ws.append(list(sanitize_excel_row(row)))
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
+        ws.sheet_view.showGridLines = False
+
+        # Largeur lisible sans rendre le classeur excessivement large à l'ouverture.
+        for index, header in enumerate(DETAIL_HEADERS, 1):
+            width = 14
+            if any(word in header for word in ("Nom", "Section", "Catégorie", "Grade", "Province")): width = 18
+            if "Unité" in header: width = 24
+            if "Diagnostic" in header or "Composantes supplémentaires" in header: width = 38
+            if "Table source" in header or "Exécutions" in header: width = 24
+            ws.column_dimensions[get_column_letter(index)].width = width
 
         info = wb.create_sheet("Informations")
-        info.append(["Analyse", title])
-        info.append(["Comparaison", f"{summary['regime_a']} vs {summary['regime_b']}"])
-        info.append(["Période", f"{summary['quarter']} {summary['year']}"])
-        info.append(["Nombre de lignes", len(rows)])
-        info.append(["Identifiant comparaison", summary["id"]])
+        info_rows = [
+            ("Analyse", title),
+            ("Comparaison", f"{summary['regime_a']} vs {summary['regime_b']}"),
+            ("Période", f"{summary['quarter']} {summary['year']}"),
+            ("Nombre de lignes", len(rows)),
+            ("Identifiant comparaison", summary["id"]),
+            ("Régime A", summary["regime_a"]), ("Régime B", summary["regime_b"]),
+            ("Note", "Les montants sont agrégés par clé de comparaison lorsqu'un agent apparaît plusieurs fois dans un régime."),
+        ]
+        for row in info_rows: info.append(list(sanitize_excel_row(row)))
+        info.column_dimensions["A"].width = 28; info.column_dimensions["B"].width = 90
         wb.save(path)
