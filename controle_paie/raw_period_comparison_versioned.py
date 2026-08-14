@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from .analysis_versioning import AnalysisVersionRegistry
 from .identity_policy import IDENTITY_ALGORITHM_VERSION
-from .raw_period_comparison_scalable import ScalableRawPeriodComparisonService
+from .raw_period_comparison_policy_scalable import PolicyScalableRawPeriodComparisonService
 
 
-class VersionedRawPeriodComparisonService(ScalableRawPeriodComparisonService):
-    """Comparaison RAW stricte avec historique immuable des réanalyses."""
+class VersionedRawPeriodComparisonService(PolicyScalableRawPeriodComparisonService):
+    """Comparaison RAW stricte avec politique centrale et historique immuable des réanalyses."""
 
     ANALYSIS_TYPE = "COMPARAISON_RAW_PERIODE"
 
