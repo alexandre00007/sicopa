@@ -13,11 +13,11 @@ from .spreadsheet_utils import sanitize_excel_row
 class SqlConsoleService:
     """Console SQL DuckDB en lecture seule pour exploration et export."""
 
-    ALLOWED_PREFIXES = {"SELECT", "WITH", "DESCRIBE", "DESC", "EXPLAIN", "SHOW", "PRAGMA"}
+    ALLOWED_PREFIXES = {"SELECT", "WITH", "DESCRIBE", "DESC", "EXPLAIN", "SHOW"}
     BLOCKED_KEYWORDS = {
         "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "REPLACE",
         "MERGE", "COPY", "ATTACH", "DETACH", "INSTALL", "LOAD", "CALL", "EXPORT", "IMPORT",
-        "VACUUM", "CHECKPOINT", "SET", "RESET", "GRANT", "REVOKE",
+        "VACUUM", "CHECKPOINT", "SET", "RESET", "GRANT", "REVOKE", "PRAGMA",
     }
 
     def __init__(self, db):
@@ -57,12 +57,10 @@ class SqlConsoleService:
         text = (query or "").strip()
         if not text:
             raise ValueError("Saisissez une requête SQL.")
-        # Ignore comments simples pour déterminer le premier mot utile.
         cleaned = re.sub(r"--[^\n]*", " ", text)
         cleaned = re.sub(r"/\*.*?\*/", " ", cleaned, flags=re.S).strip()
         if not cleaned:
             raise ValueError("La requête ne contient aucune instruction SQL.")
-        # Une seule instruction autorisée afin d'éviter un SELECT suivi d'une écriture.
         statements = [part.strip() for part in cleaned.split(";") if part.strip()]
         if len(statements) != 1:
             raise ValueError("Une seule instruction SQL peut être exécutée à la fois.")
@@ -70,7 +68,7 @@ class SqlConsoleService:
         first = re.match(r"([A-Za-z_]+)", statement)
         keyword = first.group(1).upper() if first else ""
         if keyword not in cls.ALLOWED_PREFIXES:
-            raise ValueError("Seules les requêtes de lecture SELECT, WITH, DESCRIBE, EXPLAIN, SHOW et PRAGMA sont autorisées.")
+            raise ValueError("Seules les requêtes de lecture SELECT, WITH, DESCRIBE, EXPLAIN et SHOW sont autorisées.")
         tokens = {token.upper() for token in re.findall(r"\b[A-Za-z_]+\b", statement)}
         blocked = sorted(tokens.intersection(cls.BLOCKED_KEYWORDS))
         if blocked:
