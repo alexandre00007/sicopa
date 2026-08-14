@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from .raw_fusion_enhanced_app import PayrollAppWithEnhancedRawFusion
+from .raw_fusion_scalable_app import PayrollAppWithScalableRawFusion
 from .sql_console import SqlConsoleService
 from .sql_console_app import PayrollAppWithSqlConsole as LegacySqlConsole
 
 
-class PayrollAppWithUnifiedSqlConsole(PayrollAppWithEnhancedRawFusion):
+class PayrollAppWithUnifiedSqlConsole(PayrollAppWithScalableRawFusion):
     """Raccorde la console SQL historique au-dessus de la chaîne fonctionnelle consolidée."""
 
     def __init__(self, *args, **kwargs):
