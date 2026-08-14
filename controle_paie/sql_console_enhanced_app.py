@@ -25,11 +25,15 @@ class PayrollAppWithEnhancedSqlConsole(PayrollAppWithSqlTemplates):
             child.grid_forget()
         for child in editor.grid_slaves(row=0, column=1):
             child.grid_forget()
-        self.sql_line_numbers = tk.Text(editor, width=4, padx=4, takefocus=0, borderwidth=0,
-                                        background="#E9EEF5", foreground="#667085",
-                                        font=("DejaVu Sans Mono", 10), state="disabled", wrap="none")
-        self.sql_line_numbers.grid(row=0, column=0, sticky="ns")
+        # Gouttière compacte : largeur dynamique selon le nombre réel de lignes.
+        self.sql_line_numbers = tk.Text(
+            editor, width=2, padx=2, takefocus=0, borderwidth=0, highlightthickness=0,
+            background="#F3F4F6", foreground="#6B7280", cursor="arrow",
+            font=("DejaVu Sans Mono", 9), state="disabled", wrap="none",
+        )
+        self.sql_line_numbers.grid(row=0, column=0, sticky="ns", padx=(0, 3))
         self.sql_editor.grid(row=0, column=1, sticky="nsew")
+        editor.columnconfigure(0, weight=0, minsize=0)
         editor.columnconfigure(1, weight=1)
         ybar = ttk.Scrollbar(editor, orient="vertical", command=self._sql_yview)
         ybar.grid(row=0, column=2, sticky="ns")
@@ -44,11 +48,16 @@ class PayrollAppWithEnhancedSqlConsole(PayrollAppWithSqlTemplates):
 
     def _refresh_line_numbers(self):
         if not hasattr(self, "sql_line_numbers"): return
-        count = int(self.sql_editor.index("end-1c").split(".")[0])
-        text = "\n".join(str(i) for i in range(1, count + 1))
+        count = max(1, int(self.sql_editor.index("end-1c").split(".")[0]))
+        digits = max(2, len(str(count)))
+        if int(self.sql_line_numbers.cget("width")) != digits:
+            self.sql_line_numbers.configure(width=digits)
+        text = "\n".join(f"{i:>{digits}}" for i in range(1, count + 1))
         self.sql_line_numbers.configure(state="normal")
         self.sql_line_numbers.delete("1.0", "end")
         self.sql_line_numbers.insert("1.0", text)
+        self.sql_line_numbers.tag_add("right", "1.0", "end")
+        self.sql_line_numbers.tag_configure("right", justify="right", rmargin=1)
         self.sql_line_numbers.configure(state="disabled")
         try: self.sql_line_numbers.yview_moveto(self.sql_editor.yview()[0])
         except tk.TclError: pass
