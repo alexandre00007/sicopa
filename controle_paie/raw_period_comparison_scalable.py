@@ -6,12 +6,12 @@ from pathlib import Path
 from openpyxl import Workbook
 
 from .export_streaming import write_query_xlsx
-from .raw_period_comparison_fusion_aware import FusionAwareRawPeriodComparisonService
+from .raw_period_comparison_strict import StrictRawPeriodComparisonService
 from .spreadsheet_utils import sanitize_excel_row
 
 
-class ScalableRawPeriodComparisonService(FusionAwareRawPeriodComparisonService):
-    """Comparaison RAW compatible avec fusions et exports exhaustifs en streaming."""
+class ScalableRawPeriodComparisonService(StrictRawPeriodComparisonService):
+    """Comparaison RAW stricte, compatible avec fusions et exports exhaustifs en streaming."""
 
     HEADERS = [
         "Statut","Matricule A","Matricule B","Nom A","Nom B","Prénom A","Prénom B",
