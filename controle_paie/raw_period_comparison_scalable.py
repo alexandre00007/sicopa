@@ -6,11 +6,11 @@ from pathlib import Path
 from openpyxl import Workbook
 
 from .export_streaming import write_query_xlsx
-from .raw_period_comparison_strict import StrictRawPeriodComparisonService
+from .raw_period_comparison_strict_ambiguity import AmbiguityAwareRawPeriodComparisonService
 from .spreadsheet_utils import sanitize_excel_row
 
 
-class ScalableRawPeriodComparisonService(StrictRawPeriodComparisonService):
+class ScalableRawPeriodComparisonService(AmbiguityAwareRawPeriodComparisonService):
     """Comparaison RAW stricte, compatible avec fusions et exports exhaustifs en streaming."""
 
     HEADERS = [
@@ -110,6 +110,8 @@ class ScalableRawPeriodComparisonService(StrictRawPeriodComparisonService):
             ("10_doublons_matricule_B.xlsx", "DOUBLON_MATRICULE_B"),
             ("11_doublons_nom_A.xlsx", "DOUBLON_NOM_A"),
             ("12_doublons_nom_B.xlsx", "DOUBLON_NOM_B"),
+            ("13_matchs_ambigus_matricule.xlsx", "MATCH_AMBIGU_MATRICULE"),
+            ("14_matchs_ambigus_nom.xlsx", "MATCH_AMBIGU_NOM"),
         ]
         with self.db.connect() as con:
             for index, (filename, status) in enumerate(exports, start=1):
@@ -118,9 +120,9 @@ class ScalableRawPeriodComparisonService(StrictRawPeriodComparisonService):
                 write_query_xlsx(con, folder / filename, query, [comparison_id] + extra, self.HEADERS)
 
             progress and progress(76, "Annexe RAW A complète")
-            self._export_raw_complete(con, comparison_id, "A", folder / "13_annexe_RAW_A_complete.xlsx")
+            self._export_raw_complete(con, comparison_id, "A", folder / "15_annexe_RAW_A_complete.xlsx")
             progress and progress(88, "Annexe RAW B complète")
-            self._export_raw_complete(con, comparison_id, "B", folder / "14_annexe_RAW_B_complete.xlsx")
+            self._export_raw_complete(con, comparison_id, "B", folder / "16_annexe_RAW_B_complete.xlsx")
             con.execute(
                 "UPDATE comparaisons_raw_periode SET dossier_export=? WHERE comparaison_id=?",
                 [str(folder), comparison_id],
