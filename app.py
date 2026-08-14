@@ -2,7 +2,7 @@ import logging
 import tkinter as tk
 from tkinter import messagebox
 
-from controle_paie.raw_period_comparison_fusion_aware_app import PayrollAppWithFusionAwareRawPeriodComparison as PayrollApp
+from controle_paie.task_managed_app import PayrollAppWithTaskManager as PayrollApp
 
 
 if __name__ == "__main__":
