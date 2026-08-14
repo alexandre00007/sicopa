@@ -33,7 +33,6 @@ class VersionedRawPeriodComparisonService(ScalableRawPeriodComparisonService):
                 "nom_matricule_different": int(metrics[4] or 0),
             },
             algorithm_version=IDENTITY_ALGORITHM_VERSION,
-            version_number=1,
         )
         return info
 
