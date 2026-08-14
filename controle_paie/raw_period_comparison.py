@@ -272,7 +272,7 @@ class RawPeriodComparisonService:
             metrics=con.execute("""SELECT
                 SUM(CASE WHEN commun_matricule THEN 1 ELSE 0 END),
                 SUM(CASE WHEN commun_nom THEN 1 ELSE 0 END),
-                SUM(CASE WHEN commun_matricule AND commun_nom THEN 1 ELSE 0 END),
+                SUM(CASE WHEN statut='COMMUN_PAR_MATRICULE_ET_NOM' THEN 1 ELSE 0 END),
                 SUM(CASE WHEN meme_matricule_nom_different THEN 1 ELSE 0 END),
                 SUM(CASE WHEN meme_nom_matricule_different THEN 1 ELSE 0 END)
                 FROM resultats_comparaison_raw_periode WHERE comparaison_id=?""",[comparison_id]).fetchone()
