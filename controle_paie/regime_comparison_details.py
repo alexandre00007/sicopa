@@ -13,12 +13,16 @@ DETAIL_HEADERS = [
     "Occurrences B", "Rémunération base B", "Transport B", "Prime B", "Logement B",
     "Pension / rente B", "Autres rémunérations B", "Retenues B", "Montant net B",
     "Rémunération brute calculée B", "Table source B", "Exécutions B", "Composantes supplémentaires B",
-    "Écart rémunération brute", "Écart montant net", "Écart %", "Payé dans les deux",
+    "Écart rémunération brute", "Écart montant net", "Écart %", "Double paiement potentiel",
 ]
 
 
-def list_detailed_results(service, comparison_id: str, status: str = "", limit: int = 10000) -> list[tuple]:
-    """Retourne une annexe A/B enrichie avec les colonnes standardisées disponibles dans la paie."""
+def list_detailed_results(service, comparison_id: str, status: str = "", limit: int | None = 10000) -> list[tuple]:
+    """Annexe A/B reconstruite à partir des identités déjà décidées par le moteur strict.
+
+    Aucun nouveau matching n'est effectué ici : les jointures utilisent les couples
+    matricule_normalise + nom_normalise persistés dans resultats_comparaison_regimes.
+    """
     summary = service.get_summary(comparison_id)
     params = [
         summary["institution_a"], summary["regime_a"], summary["quarter"], int(summary["year"]),
@@ -32,19 +36,23 @@ def list_detailed_results(service, comparison_id: str, status: str = "", limit: 
         else:
             status_clause = " AND r.statut=?"
             params.append(status)
-    params.append(max(1, min(int(limit), 50000)))
+
+    limit_clause = ""
+    if limit is not None:
+        params.append(max(1, int(limit)))
+        limit_clause = " LIMIT ?"
 
     with service.db.connect() as con:
         return con.execute(f"""
             WITH pa AS (
-                SELECT
-                    CASE WHEN COALESCE(matricule_normalise,'') NOT IN ('','NU')
-                         THEN 'M:' || matricule_normalise ELSE 'N:' || COALESCE(nom_normalise,'') END cle_match,
+                SELECT matricule_normalise,nom_normalise,
                     MIN(matricule_source) matricule_source,
-                    MIN(matricule_normalise) matricule_normalise,
-                    MIN(nom) nom, MIN(prenom) prenom, MIN(nom_normalise) nom_normalise,
-                    MIN(section) section, MIN(categorie) categorie, MIN(grade) grade,
-                    MIN(unite_affectation) unite_affectation, MIN(province) province,
+                    MIN(nom) nom, MIN(prenom) prenom,
+                    STRING_AGG(DISTINCT NULLIF(section,''), ' | ') section,
+                    STRING_AGG(DISTINCT NULLIF(categorie,''), ' | ') categorie,
+                    STRING_AGG(DISTINCT NULLIF(grade,''), ' | ') grade,
+                    STRING_AGG(DISTINCT NULLIF(unite_affectation,''), ' | ') unite_affectation,
+                    STRING_AGG(DISTINCT NULLIF(province,''), ' | ') province,
                     COUNT(*) occurrences,
                     SUM(COALESCE(remuneration_base,0)) remuneration_base,
                     SUM(COALESCE(transport,0)) transport,
@@ -61,16 +69,16 @@ def list_detailed_results(service, comparison_id: str, status: str = "", limit: 
                 FROM paie_standardisee
                 WHERE institution_id=? AND regime=? AND trimestre=? AND annee=?
                   AND (COALESCE(matricule_normalise,'') NOT IN ('','NU') OR COALESCE(nom_normalise,'')<>'')
-                GROUP BY 1
+                GROUP BY matricule_normalise,nom_normalise
             ), pb AS (
-                SELECT
-                    CASE WHEN COALESCE(matricule_normalise,'') NOT IN ('','NU')
-                         THEN 'M:' || matricule_normalise ELSE 'N:' || COALESCE(nom_normalise,'') END cle_match,
+                SELECT matricule_normalise,nom_normalise,
                     MIN(matricule_source) matricule_source,
-                    MIN(matricule_normalise) matricule_normalise,
-                    MIN(nom) nom, MIN(prenom) prenom, MIN(nom_normalise) nom_normalise,
-                    MIN(section) section, MIN(categorie) categorie, MIN(grade) grade,
-                    MIN(unite_affectation) unite_affectation, MIN(province) province,
+                    MIN(nom) nom, MIN(prenom) prenom,
+                    STRING_AGG(DISTINCT NULLIF(section,''), ' | ') section,
+                    STRING_AGG(DISTINCT NULLIF(categorie,''), ' | ') categorie,
+                    STRING_AGG(DISTINCT NULLIF(grade,''), ' | ') grade,
+                    STRING_AGG(DISTINCT NULLIF(unite_affectation,''), ' | ') unite_affectation,
+                    STRING_AGG(DISTINCT NULLIF(province,''), ' | ') province,
                     COUNT(*) occurrences,
                     SUM(COALESCE(remuneration_base,0)) remuneration_base,
                     SUM(COALESCE(transport,0)) transport,
@@ -87,7 +95,7 @@ def list_detailed_results(service, comparison_id: str, status: str = "", limit: 
                 FROM paie_standardisee
                 WHERE institution_id=? AND regime=? AND trimestre=? AND annee=?
                   AND (COALESCE(matricule_normalise,'') NOT IN ('','NU') OR COALESCE(nom_normalise,'')<>'')
-                GROUP BY 1
+                GROUP BY matricule_normalise,nom_normalise
             )
             SELECT
                 r.statut, r.cle_match, r.cle_type, r.diagnostic,
@@ -103,10 +111,14 @@ def list_detailed_results(service, comparison_id: str, status: str = "", limit: 
                 pb.remuneration_brute_calculee, pb.table_source, pb.executions, pb.composantes_supplementaires,
                 r.ecart_remuneration, r.ecart_net, r.ecart_pourcentage, r.double_paiement
             FROM resultats_comparaison_regimes r
-            LEFT JOIN pa ON pa.cle_match=r.cle_match
-            LEFT JOIN pb ON pb.cle_match=r.cle_match
+            LEFT JOIN pa ON COALESCE(pa.matricule_normalise,'')=COALESCE(r.matricule_normalise_a,'')
+                        AND COALESCE(pa.nom_normalise,'')=COALESCE(r.nom_normalise_a,'')
+                        AND r.occurrences_a>0
+            LEFT JOIN pb ON COALESCE(pb.matricule_normalise,'')=COALESCE(r.matricule_normalise_b,'')
+                        AND COALESCE(pb.nom_normalise,'')=COALESCE(r.nom_normalise_b,'')
+                        AND r.occurrences_b>0
             WHERE r.comparaison_id=? {status_clause}
-            ORDER BY CASE WHEN r.statut='COMMUN_IDENTIQUE' THEN 1 ELSE 0 END,
+            ORDER BY CASE WHEN r.statut IN ('COMMUN_IDENTIQUE','DOUBLE_PAIEMENT_POTENTIEL') THEN 1 ELSE 0 END,
                      ABS(COALESCE(r.ecart_remuneration,0)) DESC, COALESCE(pa.nom,pb.nom)
-            LIMIT ?
+            {limit_clause}
         """, params).fetchall()
