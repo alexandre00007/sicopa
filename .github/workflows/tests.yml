@@ -26,5 +26,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
 
+      - name: Compile application
+        run: python -m compileall -q app.py controle_paie
+
       - name: Run tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: pytest -q
