@@ -19,6 +19,12 @@ def test_occurrence_means_repeated_lines_after_first_source_line(tmp_path: Path)
     service = VersionedRawPeriodComparisonService(db)
 
     with db.connect() as con:
+        # Le schema enrichi contient les 42 colonnes historiques + 10 colonnes
+        # d'occurrences. L'analyse doit rester compatible grâce à un INSERT
+        # avec liste explicite de colonnes.
+        schema = con.execute("PRAGMA table_info('resultats_comparaison_raw_periode')").fetchall()
+        assert len(schema) == 52
+
         con.execute('CREATE TABLE raw_a(dummy INTEGER)')
         con.execute('CREATE TABLE raw_b(dummy INTEGER)')
         con.execute("""INSERT INTO journal_executions
