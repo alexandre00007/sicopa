@@ -27,8 +27,7 @@ class OccurrenceExportRawPeriodComparisonService(OccurrenceAwareRawPeriodCompari
             "COMMUN_EXACT_REPETE_A_ET_B": "situation_occurrences='COMMUN_EXACT_REPETE_A_ET_B'",
         }
         if status in special:
-            expr = special[status]
-            condition += " AND " + (expr if "=" in expr else expr)
+            condition += " AND " + special[status]
         elif status:
             condition += " AND statut=?"
             params.append(status)
@@ -43,6 +42,11 @@ class OccurrenceExportRawPeriodComparisonService(OccurrenceAwareRawPeriodCompari
                 FROM resultats_comparaison_raw_periode WHERE {condition}
                 ORDER BY CASE WHEN statut='COMMUN_PAR_MATRICULE_ET_NOM' THEN 0 ELSE 1 END,
                          GREATEST(occurrences_a,occurrences_b) DESC,ABS(ecart_brut) DESC LIMIT ?""", params).fetchall()
+
+    def delete(self, comparison_id: str):
+        with self.db.connect() as con:
+            con.execute("DELETE FROM occurrences_comparaison_raw WHERE comparaison_id=?", [comparison_id])
+        return super().delete(comparison_id)
 
     def export_all(self, comparison_id: str, parent_folder, progress=None):
         folder = Path(super().export_all(comparison_id, parent_folder, progress=progress))
