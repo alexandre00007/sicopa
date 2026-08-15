@@ -10,7 +10,11 @@ from controle_paie.sql_console import SqlConsoleService
 
 def _seed_numbers(db: Database, count: int = 12050):
     with db.connect() as con:
-        con.execute("CREATE TABLE sample_export AS SELECT i id, 'ROW-'||CAST(i AS VARCHAR) label FROM range(?) t(i)", [count])
+        con.execute("CREATE TABLE sample_export AS SELECT i AS id, 'ROW-'||CAST(i AS VARCHAR) AS row_label FROM range(?) t(i)", [count])
+
+
+def _data_rows(ws) -> int:
+    return max(0, sum(1 for _ in ws.iter_rows(values_only=True)) - 1)
 
 
 def test_streaming_xlsx_and_csv_export_all_rows(tmp_path: Path):
@@ -23,7 +27,7 @@ def test_streaming_xlsx_and_csv_export_all_rows(tmp_path: Path):
     with db.connect() as con:
         assert write_query_csv(con, csv, "SELECT * FROM sample_export ORDER BY id") == 12050
     wb = load_workbook(xlsx, read_only=True)
-    assert sum(max(0, ws.max_row - 1) for ws in wb.worksheets) == 12050
+    assert sum(_data_rows(ws) for ws in wb.worksheets) == 12050
     assert sum(1 for _ in csv.open(encoding="utf-8-sig")) - 1 == 12050
     assert not list(tmp_path.glob("*.part"))
 
@@ -36,7 +40,7 @@ def test_explorer_export_is_not_limited_by_display_pagination(tmp_path: Path):
     assert len(page) == 500
     target = service.export(str(tmp_path / "explorer.xlsx"), table="sample_export", limit=10)
     wb = load_workbook(target, read_only=True)
-    assert sum(max(0, ws.max_row - 1) for ws in wb.worksheets) == 12050
+    assert sum(_data_rows(ws) for ws in wb.worksheets) == 12050
 
 
 def test_sql_console_exports_full_query_without_fetchall_limit(tmp_path: Path):
@@ -50,4 +54,4 @@ def test_sql_console_exports_full_query_without_fetchall_limit(tmp_path: Path):
     target = service.export_excel(query, tmp_path / "sql.xlsx")
     wb = load_workbook(target, read_only=True)
     result_sheets = [ws for ws in wb.worksheets if ws.title.startswith("Résultats")]
-    assert sum(max(0, ws.max_row - 1) for ws in result_sheets) == 12050
+    assert sum(_data_rows(ws) for ws in result_sheets) == 12050
