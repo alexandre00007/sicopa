@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import csv
+import os
 import re
 import time
 from pathlib import Path
 
 from openpyxl import Workbook
 
-from .spreadsheet_utils import sanitize_excel_row
+from .export_streaming import append_query_sheets, atomic_save_workbook, write_query_csv
 
 
 class SqlConsoleService:
@@ -96,37 +96,38 @@ class SqlConsoleService:
             "elapsed": elapsed,
         }
 
-    def _all_rows(self, query: str):
-        statement = self.validate_read_only_query(query)
-        with self.db.connect() as con:
-            cursor = con.execute(statement)
-            columns = [item[0] for item in (cursor.description or [])]
-            rows = cursor.fetchall() if columns else []
-        return statement, columns, rows
-
     def export_csv(self, query: str, path: str | Path) -> Path:
-        _statement, columns, rows = self._all_rows(query)
+        statement = self.validate_read_only_query(query)
         target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("w", newline="", encoding="utf-8-sig") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(columns)
-            writer.writerows(rows)
+        with self.db.connect() as con:
+            write_query_csv(con, target, statement)
         return target
 
     def export_excel(self, query: str, path: str | Path) -> Path:
-        statement, columns, rows = self._all_rows(query)
+        statement = self.validate_read_only_query(query)
+        target = Path(path)
+        book = Workbook(write_only=True)
+        with self.db.connect() as con:
+            count = append_query_sheets(book, con, statement, sheet_name="Résultats")
+        meta = book.create_sheet("Requête SQL")
+        meta.append(["Requête"])
+        meta.append([statement])
+        meta.append(["Nombre de lignes", count])
+        atomic_save_workbook(book, target)
+        return target
+
+    def export_parquet(self, query: str, path: str | Path) -> Path:
+        """Export natif DuckDB, adapté aux résultats très volumineux."""
+        statement = self.validate_read_only_query(query)
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        workbook = Workbook()
-        result_sheet = workbook.active
-        result_sheet.title = "Résultats"
-        result_sheet.append(sanitize_excel_row(columns))
-        for row in rows:
-            result_sheet.append(sanitize_excel_row(row))
-        sql_sheet = workbook.create_sheet("Requête SQL")
-        sql_sheet.append(["Requête"])
-        sql_sheet.append([statement])
-        sql_sheet.append(["Nombre de lignes", len(rows)])
-        workbook.save(target)
+        temporary = target.with_name(f".{target.name}.part")
+        escaped = str(temporary).replace("'", "''")
+        try:
+            with self.db.connect() as con:
+                con.execute(f"COPY ({statement}) TO '{escaped}' (FORMAT PARQUET, COMPRESSION ZSTD)")
+            os.replace(temporary, target)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
         return target
