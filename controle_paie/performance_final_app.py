@@ -8,7 +8,7 @@ from .performance_continuation_app import PayrollAppWithPerformanceContinuation
 
 
 class PayrollAppWithPerformanceFinal(PayrollAppWithPerformanceContinuation):
-    """Clôture Lot 3 : pagination serveur des historiques secondaires lourds."""
+    """Clôture Lot 3 : pagination serveur et compatibilité des gestionnaires Tkinter."""
 
     HISTORY_PAGE_SIZE = 100
 
@@ -16,6 +16,49 @@ class PayrollAppWithPerformanceFinal(PayrollAppWithPerformanceContinuation):
         self.multi_history_page = 1
         self.listing_history_page = 1
         super().__init__(*args, **kwargs)
+
+    @staticmethod
+    def _place_bar(parent, bar, pady=(6, 0)):
+        """Place une barre sans mélanger pack/grid dans un même parent Tkinter."""
+        grid_slaves = parent.grid_slaves()
+        if grid_slaves:
+            rows = []
+            cols = []
+            for child in grid_slaves:
+                try:
+                    info = child.grid_info()
+                    rows.append(int(info.get("row", 0)))
+                    cols.append(int(info.get("column", 0)) + int(info.get("columnspan", 1)) - 1)
+                except Exception:
+                    pass
+            row = max(rows, default=-1) + 1
+            columnspan = max(cols, default=0) + 1
+            bar.grid(row=row, column=0, columnspan=columnspan, sticky="ew", pady=pady)
+            try:
+                parent.columnconfigure(0, weight=1)
+            except Exception:
+                pass
+        else:
+            bar.pack(fill="x", pady=pady)
+
+    def _pagination_bar(self, parent, prev_cmd, next_cmd, reset_cmd, size_var, label_var):
+        """Version sûre de la barre principale : respecte le geometry manager du parent."""
+        frame = ttk.Frame(parent)
+        self._place_bar(parent, frame, pady=(6, 0))
+        prev = ttk.Button(frame, text="◀ Page précédente", command=prev_cmd)
+        prev.pack(side="left")
+        nxt = ttk.Button(frame, text="Page suivante ▶", command=next_cmd)
+        nxt.pack(side="left", padx=6)
+        ttk.Label(frame, text="Lignes/page :", style="PageHint.TLabel").pack(side="left", padx=(12, 4))
+        size = ttk.Combobox(
+            frame, textvariable=size_var,
+            values=("100", "250", "500", "1000", "2000"),
+            width=7, state="readonly",
+        )
+        size.pack(side="left")
+        size.bind("<<ComboboxSelected>>", lambda _e: reset_cmd())
+        ttk.Label(frame, textvariable=label_var).pack(side="left", padx=12)
+        return prev, nxt
 
     @staticmethod
     def _history_bounds(total: int, page: int, page_size: int = 100):
@@ -26,7 +69,7 @@ class PayrollAppWithPerformanceFinal(PayrollAppWithPerformanceContinuation):
 
     def _add_history_pager(self, parent, label_var, prev_cmd, next_cmd):
         bar = ttk.Frame(parent)
-        bar.pack(fill="x", pady=(0, 8))
+        self._place_bar(parent, bar, pady=(0, 8))
         prev = ttk.Button(bar, text="◀ Précédent", command=prev_cmd)
         prev.pack(side="left")
         nxt = ttk.Button(bar, text="Suivant ▶", command=next_cmd)
