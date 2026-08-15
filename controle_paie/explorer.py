@@ -53,6 +53,12 @@ class DataExplorerService:
                 params.append(f"%{value}%" if operator == "contient" else f"{value}%" if operator == "commence par" else value)
         return query, params
 
+    def count(self, table: str, column: str = "", operator: str = "", value: str = "") -> int:
+        query, params = self._select_query(table, column, operator, value)
+        count_query = f"SELECT COUNT(*) FROM ({query}) q"
+        with self.db.connect() as connection:
+            return int(connection.execute(count_query, params).fetchone()[0] or 0)
+
     def read(self, table: str, column: str = "", operator: str = "", value: str = "",
              limit: int = 500, offset: int = 0) -> pd.DataFrame:
         query, params = self._select_query(table, column, operator, value)
@@ -60,6 +66,24 @@ class DataExplorerService:
         query += " LIMIT ? OFFSET ?"; params.extend([limit, offset])
         with self.db.connect() as connection:
             return connection.execute(query, params).df()
+
+    def page(self, table: str, column: str = "", operator: str = "", value: str = "",
+             page: int = 1, page_size: int = 500) -> dict:
+        page_size = max(1, min(int(page_size), 5000))
+        page = max(1, int(page))
+        total = self.count(table, column, operator, value)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        offset = (page - 1) * page_size
+        frame = self.read(table, column, operator, value, limit=page_size, offset=offset)
+        return {
+            "rows": frame,
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+            "offset": offset,
+        }
 
     def export(self, target: str, **filters) -> Path:
         """Exporte tout le périmètre filtré, indépendamment de la pagination d'affichage."""
