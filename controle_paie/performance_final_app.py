@@ -41,7 +41,7 @@ class PayrollAppWithPerformanceFinal(PayrollAppWithPerformanceContinuation):
         super()._open_multi_history()
         if not hasattr(self, "multi_history_tree") or not self.multi_history_tree.winfo_exists():
             return
-        body = self.multi_history_tree.master.master
+        body = self.multi_history_tree.master
         self.multi_history_label = tk.StringVar(value="Page 1 / 1")
         self.multi_history_prev, self.multi_history_next = self._add_history_pager(
             body, self.multi_history_label, self._multi_history_prev_page, self._multi_history_next_page
