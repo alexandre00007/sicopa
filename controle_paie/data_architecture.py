@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 
 
-GOVERNANCE_SCHEMA_VERSION = 1
+GOVERNANCE_SCHEMA_VERSION = 2
 
 
 MIGRATIONS = {
@@ -53,7 +53,185 @@ MIGRATIONS = {
         "CREATE INDEX IF NOT EXISTS idx_catalogue_raw_periode ON catalogue_raw(trimestre,annee)",
         "CREATE INDEX IF NOT EXISTS idx_qualite_imports_niveau ON qualite_imports(niveau)",
         "CREATE INDEX IF NOT EXISTS idx_journal_traitements_date ON journal_traitements(date_debut)",
-    ]
+    ],
+    2: [
+        """CREATE TABLE IF NOT EXISTS comparaisons_regimes (
+            comparaison_id VARCHAR PRIMARY KEY,
+            institution_a VARCHAR NOT NULL, regime_a VARCHAR NOT NULL,
+            institution_b VARCHAR NOT NULL, regime_b VARCHAR NOT NULL,
+            trimestre VARCHAR NOT NULL, annee INTEGER NOT NULL,
+            seuil_montant DECIMAL(38,2) DEFAULT 0,
+            seuil_pourcentage DOUBLE DEFAULT 0,
+            statut VARCHAR NOT NULL,
+            lignes_a BIGINT DEFAULT 0, lignes_b BIGINT DEFAULT 0,
+            communs BIGINT DEFAULT 0, uniquement_a BIGINT DEFAULT 0,
+            uniquement_b BIGINT DEFAULT 0, doubles BIGINT DEFAULT 0,
+            ecarts_financiers BIGINT DEFAULT 0, ecarts_admin BIGINT DEFAULT 0,
+            masse_a DECIMAL(38,2) DEFAULT 0, masse_b DECIMAL(38,2) DEFAULT 0,
+            cree_le TIMESTAMP DEFAULT CURRENT_TIMESTAMP, termine_le TIMESTAMP,
+            fichier_export VARCHAR
+        )""",
+        """CREATE TABLE IF NOT EXISTS resultats_comparaison_regimes (
+            resultat_id VARCHAR,
+            comparaison_id VARCHAR,
+            cle_type VARCHAR,
+            cle_match VARCHAR,
+            matricule_a VARCHAR, matricule_b VARCHAR,
+            matricule_normalise_a VARCHAR, matricule_normalise_b VARCHAR,
+            nom_a VARCHAR, nom_b VARCHAR,
+            nom_normalise_a VARCHAR, nom_normalise_b VARCHAR,
+            occurrences_a BIGINT DEFAULT 0, occurrences_b BIGINT DEFAULT 0,
+            remuneration_a DECIMAL(38,2) DEFAULT 0,
+            remuneration_b DECIMAL(38,2) DEFAULT 0,
+            net_a DECIMAL(38,2) DEFAULT 0,
+            net_b DECIMAL(38,2) DEFAULT 0,
+            ecart_remuneration DECIMAL(38,2) DEFAULT 0,
+            ecart_net DECIMAL(38,2) DEFAULT 0,
+            ecart_pourcentage DOUBLE DEFAULT 0,
+            grade_a VARCHAR, grade_b VARCHAR,
+            categorie_a VARCHAR, categorie_b VARCHAR,
+            affectation_a VARCHAR, affectation_b VARCHAR,
+            province_a VARCHAR, province_b VARCHAR,
+            double_paiement BOOLEAN DEFAULT FALSE,
+            ecart_financier BOOLEAN DEFAULT FALSE,
+            ecart_administratif BOOLEAN DEFAULT FALSE,
+            statut VARCHAR,
+            diagnostic VARCHAR
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_cmp_regime_resultats ON resultats_comparaison_regimes(comparaison_id,statut)",
+        """CREATE TABLE IF NOT EXISTS comparaisons_raw_periode (
+            comparaison_id VARCHAR PRIMARY KEY,
+            table_a VARCHAR NOT NULL,
+            table_b VARCHAR NOT NULL,
+            trimestre VARCHAR NOT NULL,
+            annee INTEGER NOT NULL,
+            statut VARCHAR NOT NULL,
+            cree_le TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            termine_le TIMESTAMP,
+            dossier_export VARCHAR
+        )""",
+        """CREATE TABLE IF NOT EXISTS sources_comparaison_raw_periode (
+            comparaison_id VARCHAR,
+            cote VARCHAR,
+            table_source VARCHAR,
+            execution_id VARCHAR,
+            institution_id VARCHAR,
+            regime VARCHAR
+        )""",
+        """CREATE TABLE IF NOT EXISTS resultats_comparaison_raw_periode (
+            comparaison_id VARCHAR,
+            cle_resultat VARCHAR,
+            statut VARCHAR,
+            commun_matricule BOOLEAN DEFAULT FALSE,
+            commun_nom BOOLEAN DEFAULT FALSE,
+            meme_matricule_nom_different BOOLEAN DEFAULT FALSE,
+            meme_nom_matricule_different BOOLEAN DEFAULT FALSE,
+            matricule_a VARCHAR,
+            matricule_b VARCHAR,
+            nom_norm_a VARCHAR,
+            nom_norm_b VARCHAR,
+            nom_a VARCHAR,
+            nom_b VARCHAR,
+            prenom_a VARCHAR,
+            prenom_b VARCHAR,
+            regime_a VARCHAR,
+            regime_b VARCHAR,
+            institution_a VARCHAR,
+            institution_b VARCHAR,
+            occurrences_a BIGINT DEFAULT 0,
+            occurrences_b BIGINT DEFAULT 0,
+            brut_a DECIMAL(38,2) DEFAULT 0,
+            brut_b DECIMAL(38,2) DEFAULT 0,
+            net_a DECIMAL(38,2) DEFAULT 0,
+            net_b DECIMAL(38,2) DEFAULT 0,
+            ecart_brut DECIMAL(38,2) DEFAULT 0,
+            ecart_net DECIMAL(38,2) DEFAULT 0,
+            section_a VARCHAR,
+            section_b VARCHAR,
+            categorie_a VARCHAR,
+            categorie_b VARCHAR,
+            grade_a VARCHAR,
+            grade_b VARCHAR,
+            unite_a VARCHAR,
+            unite_b VARCHAR,
+            province_a VARCHAR,
+            province_b VARCHAR,
+            doublon_matricule_a BOOLEAN DEFAULT FALSE,
+            doublon_matricule_b BOOLEAN DEFAULT FALSE,
+            doublon_nom_a BOOLEAN DEFAULT FALSE,
+            doublon_nom_b BOOLEAN DEFAULT FALSE,
+            diagnostic VARCHAR
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_raw_period_cmp ON resultats_comparaison_raw_periode(comparaison_id,statut)",
+        """CREATE TABLE IF NOT EXISTS fusions_raw (
+            fusion_id VARCHAR PRIMARY KEY,
+            table_fusion VARCHAR NOT NULL,
+            trimestre VARCHAR NOT NULL,
+            annee INTEGER NOT NULL,
+            statut VARCHAR NOT NULL,
+            lignes_fusion BIGINT DEFAULT 0,
+            nombre_sources BIGINT DEFAULT 0,
+            nombre_regimes BIGINT DEFAULT 0,
+            cree_le TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            termine_le TIMESTAMP,
+            dossier_export VARCHAR
+        )""",
+        """CREATE TABLE IF NOT EXISTS sources_fusion_raw (
+            fusion_id VARCHAR,
+            table_source VARCHAR,
+            execution_id VARCHAR,
+            institution_id VARCHAR,
+            regime VARCHAR,
+            lignes BIGINT DEFAULT 0
+        )""",
+        """CREATE TABLE IF NOT EXISTS resultats_fusion_multi (
+            fusion_id VARCHAR,
+            person_key VARCHAR,
+            matricule_normalise VARCHAR,
+            nom_normalise VARCHAR,
+            nom VARCHAR,
+            prenom VARCHAR,
+            regimes VARCHAR,
+            institutions VARCHAR,
+            nb_regimes BIGINT DEFAULT 0,
+            nb_institutions BIGINT DEFAULT 0,
+            occurrences BIGINT DEFAULT 0,
+            masse_brute DECIMAL(38,2) DEFAULT 0,
+            masse_net DECIMAL(38,2) DEFAULT 0,
+            remuneration_base DECIMAL(38,2) DEFAULT 0,
+            transport DECIMAL(38,2) DEFAULT 0,
+            prime DECIMAL(38,2) DEFAULT 0,
+            logement DECIMAL(38,2) DEFAULT 0,
+            pension_rente DECIMAL(38,2) DEFAULT 0,
+            autres_remunerations DECIMAL(38,2) DEFAULT 0,
+            retenues DECIMAL(38,2) DEFAULT 0,
+            sections VARCHAR,
+            categories VARCHAR,
+            grades VARCHAR,
+            unites_affectation VARCHAR,
+            provinces VARCHAR,
+            paiement_multi_regime BOOLEAN DEFAULT FALSE,
+            paiement_multiple_meme_regime BOOLEAN DEFAULT FALSE,
+            identite_incoherente BOOLEAN DEFAULT FALSE,
+            statut VARCHAR,
+            diagnostic VARCHAR
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_fusion_multi ON resultats_fusion_multi(fusion_id,statut)",
+        """CREATE TABLE IF NOT EXISTS versions_analyses (
+            version_id VARCHAR PRIMARY KEY,
+            type_analyse VARCHAR NOT NULL,
+            analyse_id VARCHAR NOT NULL,
+            analyse_parent_id VARCHAR,
+            numero_version INTEGER NOT NULL,
+            version_algorithme VARCHAR NOT NULL,
+            action VARCHAR NOT NULL,
+            parametres_json VARCHAR,
+            resume_json VARCHAR,
+            cree_le TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_versions_analyses_id ON versions_analyses(type_analyse,analyse_id,numero_version)",
+        "CREATE INDEX IF NOT EXISTS idx_versions_analyses_parent ON versions_analyses(type_analyse,analyse_parent_id)",
+    ],
 }
 
 
@@ -180,7 +358,7 @@ class RawCatalogService:
                     FROM journal_executions WHERE table_destination=? AND statut LIKE 'TERMINE%'""", [name]).fetchone()
                 raw_type = "FUSION" if name.startswith("raw_multi_regimes_") else "IMPORT"
                 if fusion_table and raw_type == "FUSION":
-                    fm = con.execute("""SELECT trimestre,annee FROM fusions_raw WHERE table_destination=?
+                    fm = con.execute("""SELECT trimestre,annee FROM fusions_raw WHERE table_fusion=?
                         ORDER BY cree_le DESC LIMIT 1""", [name]).fetchone()
                     if fm:
                         meta = (fm[0], fm[1], meta[2], meta[3], meta[4])
@@ -277,7 +455,6 @@ class ObservedIngestionProxy:
             self._quality.calculate(execution_id)
             self._catalog.refresh()
         except Exception:
-            # L'import reste valide meme si la metrologie secondaire echoue.
             pass
         return execution_id
 
