@@ -20,6 +20,7 @@ def test_streaming_excel_exports_all_rows(tmp_path):
     assert count == 12050
     wb = load_workbook(path, read_only=True)
     ws = wb[wb.sheetnames[0]]
-    assert ws.max_row == 12051
-    assert ws.cell(2, 1).value == 0
-    assert ws.cell(12051, 1).value == 12049
+    rows = list(ws.iter_rows(values_only=True))
+    assert len(rows) == 12051
+    assert rows[1][0] == 0
+    assert rows[-1][0] == 12049
