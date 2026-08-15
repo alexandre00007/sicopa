@@ -5,6 +5,10 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from . import listing_analysis as listing_analysis_module
+from . import multiregime as multiregime_module
+from . import reports as reports_module
+from .autosplit_workbook import patch_workbook_factory
 from .listing_analysis import ListingGroupAnalysisService
 from .multiregime import MultiRegimeAnalysisService
 from .reports import ReportService
@@ -29,12 +33,13 @@ def _publish_directory(temp_package: Path, final_root: Path, temp_root: Path) ->
 
 
 class ReliableListingGroupAnalysisService(ListingGroupAnalysisService):
-    """Génère le package complet avant de le rendre visible dans le dossier final."""
+    """Package listing atomique et feuilles Excel automatiquement fractionnées."""
 
     def export(self, group_id: str, root: str, progress=None) -> Path:
         final_root, temp_root = _temporary_root(root)
         try:
-            temporary_package = Path(super().export(group_id, str(temp_root), progress=progress))
+            with patch_workbook_factory(listing_analysis_module):
+                temporary_package = Path(super().export(group_id, str(temp_root), progress=progress))
             final = _publish_directory(temporary_package, final_root, temp_root)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -46,12 +51,13 @@ class ReliableListingGroupAnalysisService(ListingGroupAnalysisService):
 
 
 class ReliableMultiRegimeAnalysisService(MultiRegimeAnalysisService):
-    """Publie une analyse multi-régimes uniquement lorsque tous ses fichiers sont générés."""
+    """Package multi-régimes atomique et feuilles Excel automatiquement fractionnées."""
 
     def export(self, campaign_id: str, root: str, progress=None) -> Path:
         final_root, temp_root = _temporary_root(root)
         try:
-            temporary_package = Path(super().export(campaign_id, str(temp_root), progress=progress))
+            with patch_workbook_factory(multiregime_module):
+                temporary_package = Path(super().export(campaign_id, str(temp_root), progress=progress))
             final = _publish_directory(temporary_package, final_root, temp_root)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
@@ -63,16 +69,17 @@ class ReliableMultiRegimeAnalysisService(MultiRegimeAnalysisService):
 
 
 class ReliableReportService(ReportService):
-    """Évite de publier un package de rapports incomplet."""
+    """Rapports atomiques avec fractionnement automatique des annexes volumineuses."""
 
     def generate_package(self, root: str, institution_id: str, regime: str, quarter: str, year: int,
                          progress=None, impact_formula_id: str = "") -> Path:
         final_root, temp_root = _temporary_root(root)
         try:
-            temporary_package = Path(super().generate_package(
-                str(temp_root), institution_id, regime, quarter, year,
-                progress=progress, impact_formula_id=impact_formula_id,
-            ))
+            with patch_workbook_factory(reports_module):
+                temporary_package = Path(super().generate_package(
+                    str(temp_root), institution_id, regime, quarter, year,
+                    progress=progress, impact_formula_id=impact_formula_id,
+                ))
             return _publish_directory(temporary_package, final_root, temp_root)
         except Exception:
             shutil.rmtree(temp_root, ignore_errors=True)
