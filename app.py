@@ -2,7 +2,7 @@ import logging
 import tkinter as tk
 from tkinter import messagebox
 
-from controle_paie.export_reliability_app import PayrollAppWithReliableExports as PayrollApp
+from controle_paie.data_architecture_app import PayrollAppWithDataArchitecture as PayrollApp
 
 
 if __name__ == "__main__":
