@@ -5,3 +5,4 @@ pandas>=2.0
 pyodbc>=5.0; platform_system == "Windows"
 pypdf>=5.0,<7
 pdfplumber>=0.11,<1
+reportlab>=4.0,<5
