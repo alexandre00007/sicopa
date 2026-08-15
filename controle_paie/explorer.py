@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
 from .database import Database
-from .spreadsheet_utils import sanitize_excel_dataframe
+from .export_streaming import write_query_xlsx
 
 
 class DataExplorerService:
@@ -26,13 +25,13 @@ class DataExplorerService:
         with self.db.connect() as connection:
             return [row[1] for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()]
 
-    def read(self, table: str, column: str = "", operator: str = "", value: str = "",
-             limit: int = 500, offset: int = 0) -> pd.DataFrame:
+    def _select_query(self, table: str, column: str = "", operator: str = "", value: str = ""):
+        self._require_table(table)
         columns = self.columns(table)
         if column and column not in columns:
             raise ValueError("Colonne inconnue pour cette table.")
-        limit = max(1, min(int(limit), 10_000)); offset = max(0, int(offset))
-        query = f'SELECT * FROM "{table}"'; params = []
+        query = f'SELECT * FROM "{table}"'
+        params = []
         if column and operator:
             quoted = '"' + column.replace('"', '""') + '"'
             clauses = {
@@ -52,15 +51,25 @@ class DataExplorerService:
             query += " WHERE " + clauses[operator]
             if operator not in {"est vide", "n’est pas vide"}:
                 params.append(f"%{value}%" if operator == "contient" else f"{value}%" if operator == "commence par" else value)
+        return query, params
+
+    def read(self, table: str, column: str = "", operator: str = "", value: str = "",
+             limit: int = 500, offset: int = 0) -> pd.DataFrame:
+        query, params = self._select_query(table, column, operator, value)
+        limit = max(1, min(int(limit), 10_000)); offset = max(0, int(offset))
         query += " LIMIT ? OFFSET ?"; params.extend([limit, offset])
         with self.db.connect() as connection:
             return connection.execute(query, params).df()
 
     def export(self, target: str, **filters) -> Path:
-        filters["limit"] = min(int(filters.get("limit", 10_000)), 100_000)
-        data = self.read(**filters)
-        path = Path(target); path.parent.mkdir(parents=True, exist_ok=True)
-        sanitize_excel_dataframe(data).to_excel(path, index=False, engine="openpyxl")
+        """Exporte tout le périmètre filtré, indépendamment de la pagination d'affichage."""
+        query, params = self._select_query(
+            filters.get("table", ""), filters.get("column", ""),
+            filters.get("operator", ""), filters.get("value", ""),
+        )
+        path = Path(target)
+        with self.db.connect() as connection:
+            write_query_xlsx(connection, path, query, params, sheet_name="Explorateur")
         return path
 
     def delete_rows(self, table: str, column: str = "", operator: str = "", value: str = "",
@@ -71,10 +80,7 @@ class DataExplorerService:
         query = f'DELETE FROM "{table}"'
         params = []
         clauses = []
-        filters = [
-            (column, operator, value),
-            (column2, operator2, value2),
-        ]
+        filters = [(column, operator, value), (column2, operator2, value2)]
         for col, op, raw_value in filters:
             if not col or not op:
                 continue
@@ -95,21 +101,13 @@ class DataExplorerService:
                 raise ValueError("Opérateur de filtre inconnu.")
             clause = clause_map[op]
             if op not in {"est vide", "n’est pas vide"}:
-                if op == "contient":
-                    params.append(f"%{raw_value}%")
-                elif op == "commence par":
-                    params.append(f"{raw_value}%")
-                else:
-                    params.append(str(raw_value))
+                params.append(f"%{raw_value}%" if op == "contient" else f"{raw_value}%" if op == "commence par" else str(raw_value))
             clauses.append(clause)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         with self.db.connect() as connection:
-            count = 0
-            if clauses:
-                count = connection.execute(f'SELECT COUNT(*) FROM "{table}" WHERE ' + " AND ".join(clauses), params).fetchone()[0]
-            else:
-                count = connection.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+            count_query = f'SELECT COUNT(*) FROM "{table}"' + (" WHERE " + " AND ".join(clauses) if clauses else "")
+            count = connection.execute(count_query, params).fetchone()[0]
             connection.execute(query, params)
             return int(count)
 
