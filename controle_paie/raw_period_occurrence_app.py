@@ -12,8 +12,33 @@ class PayrollAppWithRawOccurrenceDetails(PayrollAppWithStrictIdentityPolicy):
     def _build_matching(self):
         super()._build_matching()
         self._configure_occurrence_columns()
+        self._configure_occurrence_filters()
         if hasattr(self, "rpc_tree"):
             self.rpc_tree.bind("<Double-1>", self._rpc_open_occurrence_details)
+
+    def _configure_occurrence_filters(self):
+        values = [
+            "Tous",
+            "COMMUN_PAR_MATRICULE_ET_NOM",
+            "COMMUN_EXACT_1_VS_1",
+            "COMMUN_EXACT_REPETE_A",
+            "COMMUN_EXACT_REPETE_B",
+            "COMMUN_EXACT_REPETE_A_ET_B",
+            "COMMUN_PAR_MATRICULE",
+            "COMMUN_PAR_NOM",
+            "MATCH_AMBIGU_MATRICULE",
+            "MATCH_AMBIGU_NOM",
+            "UNIQUEMENT_A",
+            "UNIQUEMENT_B",
+            "MEME_MATRICULE_NOM_DIFFERENT",
+            "MEME_NOM_MATRICULE_DIFFERENT",
+            "DOUBLON_MATRICULE_A",
+            "DOUBLON_MATRICULE_B",
+            "DOUBLON_NOM_A",
+            "DOUBLON_NOM_B",
+        ]
+        if hasattr(self, "_set_combo_values_for_variable"):
+            self._set_combo_values_for_variable(getattr(self, "rpc_filter", None), values)
 
     def _configure_occurrence_columns(self):
         if not hasattr(self, "rpc_tree"):
@@ -88,8 +113,6 @@ class PayrollAppWithRawOccurrenceDetails(PayrollAppWithStrictIdentityPolicy):
         mat_a, mat_b = values[1], values[2]
         nom_a, nom_b = values[3], values[4]
 
-        # Les valeurs normalisées exactes sont récupérées depuis le résultat sélectionné
-        # pour éviter tout rematching depuis les libellés affichés.
         with self.db.connect() as con:
             row = con.execute("""SELECT matricule_a,matricule_b,nom_norm_a,nom_norm_b
                 FROM resultats_comparaison_raw_periode
