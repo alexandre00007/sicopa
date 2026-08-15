@@ -18,19 +18,22 @@ def _seed(db):
             ('e2','IMPORT_ACCESS','b.accdb','B','raw_b','i1','CARC','T1',2026,'append',1,1,'TERMINE',CURRENT_TIMESTAMP)
         """)
         rows = [
-            ('p1','e1','CNSS',100,1),
-            ('p2','e1','CNSS',120,2),
-            ('p3','e2','CARC',200,1),
+            ('p1','e1','CNSS','T1',2026,100,1,'AGENT TEST'),
+            ('p2','e1','CNSS','T1',2026,120,2,'AGENT TEST'),
+            ('p3','e2','CARC','T1',2026,200,1,'AGENT TEST'),
+            # Ligne volontairement parasite : meme execution_id mais mauvaise periode.
+            # Elle ne doit jamais entrer dans l'annexe de T1 2026.
+            ('p_old','e1','CNSS','T4',2025,999,99,'AGENT TEST'),
         ]
-        for line_id, execution_id, regime, amount, line_no in rows:
+        for line_id, execution_id, regime, quarter, year, amount, line_no, normalized_name in rows:
             con.execute("""INSERT INTO paie_standardisee
                 (ligne_paie_id,execution_id,institution_id,regime,trimestre,annee,table_source,
                  matricule_source,matricule_normalise,nom,prenom,nom_normalise,section,categorie,grade,
                  unite_affectation,province,remuneration_base,transport,prime,logement,pension_rente,
                  autres_remunerations,retenues,montant_net,remuneration_brute_calculee,ligne_source)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                [line_id,execution_id,'i1',regime,'T1',2026,'A' if execution_id=='e1' else 'B',
-                 '001','001','Agent','Test','AGENT TEST','SEC','CAT','GR','UNIT','PROV',
+                [line_id,execution_id,'i1',regime,quarter,year,'A' if execution_id=='e1' else 'B',
+                 '001','001','Agent','Test',normalized_name,'SEC','CAT','GR','UNIT','PROV',
                  amount,0,0,0,0,0,0,amount,amount,line_no])
 
 
@@ -50,6 +53,10 @@ def test_occurrence_annex_keeps_every_physical_source_line(tmp_path):
     assert check['aggregated_occurrences'] == 3
     assert check['agents'] == 1
     assert check['difference'] == 0
+    assert check['physical_gross'] == 420
+    assert check['aggregated_gross'] == 420
+    assert check['physical_net'] == 420
+    assert check['aggregated_net'] == 420
     assert check['ok'] is True
 
     folder = tmp_path / 'export'
@@ -70,14 +77,56 @@ def test_occurrence_annex_keeps_every_physical_source_line(tmp_path):
         detail_rows.extend(list(ws.iter_rows(min_row=2, values_only=True)))
     assert {row[1] for row in detail_rows} == {'raw_a', 'raw_b'}
     assert {row[2] for row in detail_rows} == {'e1', 'e2'}
-    assert sorted(row[3] for row in detail_rows if row[2] == 'e1') == [1, 2]
-    assert all(row[22] == 3 for row in detail_rows)
-    assert all(row[23] == 2 for row in detail_rows)
-    assert all(row[28] is True for row in detail_rows)
+    assert {row[3] for row in detail_rows} == {'p1', 'p2', 'p3'}
+    assert sorted(row[4] for row in detail_rows if row[2] == 'e1') == [1, 2]
+    assert all(row[7] == 'T1' and row[8] == 2026 for row in detail_rows)
+    assert all(row[23] == 3 for row in detail_rows)
+    assert all(row[24] == 2 for row in detail_rows)
+    assert all(row[25] == 2 for row in detail_rows)
+    assert all(row[26] == 2 for row in detail_rows)
+    assert all(row[33] is True for row in detail_rows)
 
     control = wb['Controle coherence']
     values = {row[0]: row[1] for row in control.iter_rows(min_row=2, values_only=True)}
+    assert values['Periode'] == 'T1 2026'
     assert values['Lignes physiques sources'] == 3
     assert values['Occurrences agregees'] == 3
     assert values['Lignes exportees'] == 3
+    assert values['Difference brut'] == 0
+    assert values['Difference net'] == 0
     assert values['Controle'] == 'OK'
+
+
+def test_occurrences_remain_coherent_after_reanalysis(tmp_path):
+    db = Database(tmp_path / 'fusion_reanalysis.duckdb')
+    db.migrate()
+    _seed(db)
+    service = OccurrenceExportRawFusionService(db)
+    info = service.create_fusion(['raw_a','raw_b'],'T1',2026,'reanalyze')
+
+    before = service.occurrence_consistency(info['id'])
+    service.reanalyze(info['id'])
+    after = service.occurrence_consistency(info['id'])
+
+    assert before['physical_rows'] == after['physical_rows'] == 3
+    assert after['aggregated_occurrences'] == 3
+    assert after['physical_gross'] == after['aggregated_gross'] == 420
+    assert after['physical_net'] == after['aggregated_net'] == 420
+    assert after['ok'] is True
+
+
+def test_strict_identity_export_filter_uses_final_status(tmp_path):
+    db = Database(tmp_path / 'fusion_strict_export.duckdb')
+    db.migrate()
+    _seed(db)
+    service = OccurrenceExportRawFusionService(db)
+    info = service.create_fusion(['raw_a','raw_b'],'T1',2026,'strict')
+    with db.connect() as con:
+        con.execute("""UPDATE resultats_fusion_multi
+            SET statut='MATRICULE_PARTAGE_IDENTITES_DIFFERENTES',identite_incoherente=TRUE
+            WHERE fusion_id=?""", [info['id']])
+        query, params = service._result_query('IDENTITE_INCOHERENTE')
+        rows = con.execute(query, [info['id']] + params).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 'MATRICULE_PARTAGE_IDENTITES_DIFFERENTES'
+    assert rows[0][17] is True
