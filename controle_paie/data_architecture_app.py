@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from .data_architecture import (
     DataQualityService,
@@ -147,6 +147,35 @@ class PayrollAppWithDataArchitecture(PayrollAppWithReliableExports):
         self.data_governance_status.set(
             f"{len(raw_rows)} RAW catalogué(s) — qualité et traitements centralisés."
         )
+
+    def _raw_quality_decision(self, tables: list[str]) -> bool:
+        with self.db.connect() as con:
+            rows = con.execute("""SELECT table_name,niveau_qualite,score_qualite FROM catalogue_raw
+                WHERE table_name IN (SELECT UNNEST(?))""", [tables]).fetchall()
+        blocked = [name for name, level, _score in rows if level == "INEXPLOITABLE_POUR_MATCHING"]
+        if blocked:
+            messagebox.showerror(
+                "Qualité insuffisante",
+                "Analyse bloquée : aucune identité exploitable dans " + ", ".join(blocked) + ".\n\n"
+                "Consultez l'onglet Qualité & RAW avant de relancer.",
+            )
+            return False
+        weak = [(name, score) for name, level, score in rows if level == "FAIBLE"]
+        if weak:
+            detail = "\n".join(f"• {name} — score {float(score or 0):.1f}/100" for name, score in weak)
+            return messagebox.askyesno(
+                "Qualité faible",
+                "La comparaison peut produire beaucoup de correspondances incertaines :\n\n"
+                + detail + "\n\nContinuer malgré tout ?",
+            )
+        return True
+
+    def _rpc_analyze(self):
+        a = self.rpc_table_a.get().strip() if hasattr(self, "rpc_table_a") else ""
+        b = self.rpc_table_b.get().strip() if hasattr(self, "rpc_table_b") else ""
+        if a and b and not self._raw_quality_decision([a, b]):
+            return
+        return super()._rpc_analyze()
 
     def _background(self, task, success, refresh_data=False, operation=""):
         journal = getattr(self, "treatment_journal_service", None)
