@@ -27,6 +27,8 @@ class ScalableRawFusionService(EnhancedRawFusionService):
             condition += " AND COALESCE(d.doublon_matricule,FALSE)"
         elif status == "DOUBLON_NOM":
             condition += " AND COALESCE(d.doublon_nom,FALSE)"
+        elif status == "IDENTITE_INCOHERENTE":
+            condition += " AND (COALESCE(r.identite_incoherente,FALSE) OR r.statut='MATRICULE_PARTAGE_IDENTITES_DIFFERENTES')"
         elif status:
             condition += " AND r.statut=?"
             params.append(status)
@@ -70,8 +72,8 @@ class ScalableRawFusionService(EnhancedRawFusionService):
             ("01_tous_les_agents.xlsx", ""),
             ("02_agents_deux_regimes.xlsx", "DEUX_REGIMES"),
             ("03_agents_trois_regimes_plus.xlsx", "TROIS_REGIMES_OU_PLUS"),
-            ("04_paiements_multiples.xlsx", "PAIEMENT_MULTIPLE_MEME_REGIME"),
-            ("05_identites_incoherentes.xlsx", "IDENTITE_INCOHERENTE"),
+            ("04_paiements_multiples_meme_regime.xlsx", "PAIEMENT_MULTIPLE_MEME_REGIME"),
+            ("05_identites_incoherentes_strictes.xlsx", "IDENTITE_INCOHERENTE"),
             ("06_plusieurs_institutions.xlsx", "PLUSIEURS_INSTITUTIONS"),
             ("09_doublons_matricule.xlsx", "DOUBLON_MATRICULE"),
             ("10_doublons_nom.xlsx", "DOUBLON_NOM"),
