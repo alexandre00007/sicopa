@@ -2,7 +2,7 @@ import logging
 import tkinter as tk
 from tkinter import messagebox
 
-from controle_paie.strict_identity_app import PayrollAppWithStrictIdentityPolicy as PayrollApp
+from controle_paie.raw_period_occurrence_app import PayrollAppWithRawOccurrenceDetails as PayrollApp
 
 
 if __name__ == "__main__":
