@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -11,7 +12,8 @@ from .raw_period_occurrences import OccurrenceAwareRawPeriodComparisonService
 class OccurrenceExportRawPeriodComparisonService(OccurrenceAwareRawPeriodComparisonService):
     """Expose les métriques d'occurrences dans l'UI et les exports exhaustifs."""
 
-    def list_results_enriched(self, comparison_id: str, status: str = "", limit: int = 3000):
+    @staticmethod
+    def _result_condition(comparison_id: str, status: str = ""):
         condition = "comparaison_id=?"
         params = [comparison_id]
         special = {
@@ -31,7 +33,13 @@ class OccurrenceExportRawPeriodComparisonService(OccurrenceAwareRawPeriodCompari
         elif status:
             condition += " AND statut=?"
             params.append(status)
-        params.append(max(1, min(int(limit), 10000)))
+        return condition, params
+
+    def list_results_enriched(self, comparison_id: str, status: str = "", limit: int = 3000, offset: int = 0):
+        condition, params = self._result_condition(comparison_id, status)
+        limit = max(1, min(int(limit), 10000))
+        offset = max(0, int(offset))
+        params.extend([limit, offset])
         with self.db.connect() as con:
             return con.execute(f"""SELECT statut,matricule_a,matricule_b,nom_a,nom_b,prenom_a,prenom_b,
                 commun_matricule,commun_nom,regime_a,regime_b,institution_a,institution_b,
@@ -41,7 +49,21 @@ class OccurrenceExportRawPeriodComparisonService(OccurrenceAwareRawPeriodCompari
                 executions_a,executions_b,numeros_lignes_a,numeros_lignes_b,montants_distincts_a,montants_distincts_b,diagnostic
                 FROM resultats_comparaison_raw_periode WHERE {condition}
                 ORDER BY CASE WHEN statut='COMMUN_PAR_MATRICULE_ET_NOM' THEN 0 ELSE 1 END,
-                         GREATEST(occurrences_a,occurrences_b) DESC,ABS(ecart_brut) DESC LIMIT ?""", params).fetchall()
+                         GREATEST(occurrences_a,occurrences_b) DESC,ABS(ecart_brut) DESC LIMIT ? OFFSET ?""", params).fetchall()
+
+    def page_results_enriched(self, comparison_id: str, status: str = "", page: int = 1, page_size: int = 250):
+        page_size = max(25, min(int(page_size), 2000))
+        condition, params = self._result_condition(comparison_id, status)
+        with self.db.connect() as con:
+            total = int(con.execute(
+                f"SELECT COUNT(*) FROM resultats_comparaison_raw_periode WHERE {condition}", params
+            ).fetchone()[0])
+        total_pages = max(1, math.ceil(total / page_size))
+        page = max(1, min(int(page), total_pages))
+        offset = (page - 1) * page_size
+        rows = self.list_results_enriched(comparison_id, status, page_size, offset)
+        return {"rows": rows, "total": total, "page": page, "page_size": page_size,
+                "total_pages": total_pages, "offset": offset}
 
     def delete(self, comparison_id: str):
         with self.db.connect() as con:
