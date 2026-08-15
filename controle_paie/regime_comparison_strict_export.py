@@ -1,50 +1,92 @@
 from __future__ import annotations
 
-from openpyxl import load_workbook
-from openpyxl.styles import Font
+from pathlib import Path
 
+from openpyxl import Workbook
+
+from .export_streaming import append_query_sheets, atomic_save_workbook
 from .regime_comparison_versioned import VersionedStrictRegimeComparisonService
-from .spreadsheet_utils import sanitize_excel_row
 
 
 class StrictExportRegimeComparisonService(VersionedStrictRegimeComparisonService):
-    """Ajoute les catégories strictes à l'export Excel historique avec versionnement."""
+    """Export strict, exhaustif et streaming de la comparaison entre régimes."""
+
+    HEADERS = ["Statut","Clé","Matricule","Nom","Occurrences A","Occurrences B","Brut A","Brut B",
+               "Écart brut","Net A","Net B","Écart net","Écart %","Grade A","Grade B","Catégorie A",
+               "Catégorie B","Affectation A","Affectation B","Diagnostic"]
+
+    def _export_query(self, status: str = ""):
+        condition = "comparaison_id=?"
+        params = []
+        if status == "DOUBLE_PAIEMENT":
+            condition += " AND double_paiement"
+        elif status:
+            condition += " AND statut=?"
+            params.append(status)
+        query = f"""SELECT statut,cle_type,COALESCE(matricule_a,matricule_b,''),
+                COALESCE(NULLIF(nom_a,''),nom_b,''),occurrences_a,occurrences_b,
+                remuneration_a,remuneration_b,ecart_remuneration,net_a,net_b,ecart_net,ecart_pourcentage,
+                COALESCE(grade_a,''),COALESCE(grade_b,''),COALESCE(categorie_a,''),COALESCE(categorie_b,''),
+                COALESCE(affectation_a,''),COALESCE(affectation_b,''),diagnostic
+            FROM resultats_comparaison_regimes WHERE {condition}
+            ORDER BY CASE WHEN statut='COMMUN_IDENTIQUE' THEN 1 ELSE 0 END,
+                     ABS(ecart_remuneration) DESC,nom_a,nom_b"""
+        return query, params
 
     def export(self, comparison_id: str, path: str) -> str:
-        target = super().export(comparison_id, path)
-        wb = load_workbook(target)
-        ws = wb["Synthèse"]
-        for row in ws.iter_rows(min_col=1, max_col=2):
-            if row[0].value == "Agents communs / payés dans les deux":
-                row[0].value = "Identités exactes communes"
-            if row[0].value == "Écarts financiers":
-                row[0].value = "Écarts financiers sur identités fiables"
-            if row[0].value == "Écarts administratifs":
-                row[0].value = "Écarts administratifs sur identités fiables"
         summary = self.get_summary(comparison_id)
-        ws.append(["Double paiement potentiel — identité exacte", summary["double"]])
-        ws.append(["Règle stricte", "Commun certain = même matricule normalisé ET même nom normalisé ; aucun candidat ambigu n'est choisi arbitrairement"])
+        target = Path(path)
+        if target.suffix.lower() != ".xlsx":
+            target = target.with_suffix(".xlsx")
+        target.parent.mkdir(parents=True, exist_ok=True)
 
-        headers = ["Statut","Clé","Matricule","Nom","Occurrences A","Occurrences B","Brut A","Brut B",
-                   "Écart brut","Net A","Net B","Écart net","Écart %","Grade A","Grade B","Catégorie A",
-                   "Catégorie B","Affectation A","Affectation B","Diagnostic"]
-        for title, status in [
-            ("Nom probable", "COMMUN_PAR_NOM_PROBABLE"),
-            ("Double paiement potentiel", "DOUBLE_PAIEMENT_POTENTIEL"),
-            ("Nom matricule différent", "NOM_MATRICULE_DIFFERENT"),
-            ("Ambigu matricule", "MATCH_AMBIGU_MATRICULE"),
-            ("Ambigu nom", "MATCH_AMBIGU_NOM"),
+        book = Workbook(write_only=True)
+        ws = book.create_sheet("Synthèse")
+        ws.append(["Indicateur", "Valeur"])
+        for row in [
+            ("Comparaison", f"{summary['regime_a']} vs {summary['regime_b']}"),
+            ("Période", f"{summary['quarter']} {summary['year']}"),
+            ("Lignes régime A", summary["rows_a"]),
+            ("Lignes régime B", summary["rows_b"]),
+            ("Identités exactes communes", summary["common"]),
+            ("Uniquement régime A", summary["only_a"]),
+            ("Uniquement régime B", summary["only_b"]),
+            ("Double paiement potentiel — identité exacte", summary["double"]),
+            ("Écarts financiers sur identités fiables", summary["financial"]),
+            ("Écarts administratifs sur identités fiables", summary["administrative"]),
+            ("Masse régime A", summary["mass_a"]),
+            ("Masse régime B", summary["mass_b"]),
+            ("Écart de masse", (summary["mass_a"] or 0) - (summary["mass_b"] or 0)),
+            ("Règle stricte", "Commun certain = même matricule normalisé ET même nom normalisé ; aucun candidat ambigu n'est choisi arbitrairement"),
         ]:
-            if title[:31] in wb.sheetnames:
-                del wb[title[:31]]
-            sheet = wb.create_sheet(title[:31])
-            sheet.append(headers)
-            for cell in sheet[1]:
-                cell.font = Font(bold=True)
-            for row in self.list_results(comparison_id, status, 10000):
-                sheet.append(list(sanitize_excel_row(row)))
-            sheet.freeze_panes = "A2"
-            sheet.auto_filter.ref = sheet.dimensions
+            ws.append(list(row))
 
-        wb.save(target)
-        return target
+        sheets = [("Tous les résultats", "")]
+        labels = {
+            "COMMUN_IDENTIQUE": "Communs identiques",
+            "COMMUN_PAR_NOM_PROBABLE": "Nom probable",
+            "ECART_FINANCIER": "Écarts financiers",
+            "ECART_ADMINISTRATIF": "Écarts administratifs",
+            "ECART_FINANCIER_ET_ADMIN": "Écarts fin+admin",
+            "PAIEMENT_MULTIPLE": "Paiements multiples",
+            "DOUBLE_PAIEMENT_POTENTIEL": "Double paiement potentiel",
+            "IDENTITE_INCOHERENTE": "Identités incohérentes",
+            "NOM_MATRICULE_DIFFERENT": "Nom matricule différent",
+            "MATCH_AMBIGU_MATRICULE": "Ambigu matricule",
+            "MATCH_AMBIGU_NOM": "Ambigu nom",
+            "UNIQUEMENT_REGIME_A": "Uniquement A",
+            "UNIQUEMENT_REGIME_B": "Uniquement B",
+        }
+        sheets.extend((labels.get(status, status), status) for status in self.STATUSES)
+
+        with self.db.connect() as con:
+            for title, status in sheets:
+                query, extra = self._export_query(status)
+                append_query_sheets(book, con, query, [comparison_id] + extra,
+                                    headers=self.HEADERS, sheet_name=title)
+
+        atomic_save_workbook(book, target)
+        with self.db.connect() as con:
+            con.execute("UPDATE comparaisons_regimes SET fichier_export=? WHERE comparaison_id=?",
+                        [str(target), comparison_id])
+        return str(target)
