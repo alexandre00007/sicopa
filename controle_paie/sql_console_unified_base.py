@@ -6,7 +6,9 @@ from .sql_console_app import PayrollAppWithSqlConsole as LegacySqlConsole
 
 
 class PayrollAppWithUnifiedSqlConsole(PayrollAppWithScalableRawFusion):
-    """Raccorde la console SQL historique au-dessus de la chaîne fonctionnelle consolidée."""
+    """Raccorde une seule console SQL canonique au-dessus de la chaîne consolidée."""
+
+    SQL_TAB_LABEL = "Console SQL"
 
     def __init__(self, *args, **kwargs):
         self.sql_console_service = None
@@ -18,7 +20,42 @@ class PayrollAppWithUnifiedSqlConsole(PayrollAppWithScalableRawFusion):
     def _build_ui(self):
         super()._build_ui()
         self.sql_console_service = SqlConsoleService(self.db)
+        self._remove_duplicate_sql_tabs()
         self._add_sql_console_tab()
+        self._normalize_sql_tab_label()
+
+    def _remove_duplicate_sql_tabs(self):
+        """Retire les anciennes variantes SQL avant de créer la console canonique."""
+        notebook = getattr(self, "notebook", None)
+        if notebook is None:
+            return
+        for tab_id in list(notebook.tabs()):
+            try:
+                label = str(notebook.tab(tab_id, "text") or "").strip().lower()
+            except Exception:
+                continue
+            is_sql = (
+                "sql" in label
+                and any(token in label for token in ("requ", "console", "éditeur", "editeur"))
+            )
+            if is_sql:
+                try:
+                    notebook.forget(tab_id)
+                except Exception:
+                    pass
+
+    def _normalize_sql_tab_label(self):
+        notebook = getattr(self, "notebook", None)
+        page = getattr(self, "sql_console_page", None)
+        if notebook is None or page is None:
+            return
+        shell = getattr(self, "_tab_shells", {}).get("sql_console_page")
+        if shell is None:
+            return
+        try:
+            notebook.tab(shell, text=self.SQL_TAB_LABEL)
+        except Exception:
+            pass
 
     _add_sql_console_tab = LegacySqlConsole._add_sql_console_tab
     _build_sql_console = LegacySqlConsole._build_sql_console
