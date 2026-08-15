@@ -2,7 +2,7 @@ import logging
 import tkinter as tk
 from tkinter import messagebox
 
-from controle_paie.data_architecture_final_app import PayrollAppWithFinalDataArchitecture as PayrollApp
+from controle_paie.performance_health_app import PayrollAppWithPerformanceHealth as PayrollApp
 
 
 if __name__ == "__main__":
