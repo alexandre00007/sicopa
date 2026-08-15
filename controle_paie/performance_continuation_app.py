@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 import math
+import queue
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .cancellation import TaskCancelledError
+from .errors import explain_error
 from .performance_health_app import PayrollAppWithPerformanceHealth
 
 
@@ -37,7 +41,7 @@ class PayrollAppWithPerformanceContinuation(PayrollAppWithPerformanceHealth):
         )
         self.cancel_task_btn.pack(side="left")
         self.cancel_task_status = tk.StringVar(
-            value="Annulation cooperative : l'arret se fait au prochain point de progression sur."
+            value="Annulation coopérative : l'arrêt se fait au prochain point de progression sûr."
         )
         ttk.Label(bar, textvariable=self.cancel_task_status, style="PageHint.TLabel").pack(side="left", padx=10)
 
@@ -61,6 +65,98 @@ class PayrollAppWithPerformanceContinuation(PayrollAppWithPerformanceHealth):
         if manager is not None:
             manager.check_cancelled()
         return super()._progress(value, text)
+
+    def _background(self, task, success, refresh_data=False, operation=""):
+        """Même moteur asynchrone que l'UI de base, avec un événement ANNULE distinct."""
+        if self.busy:
+            messagebox.showwarning("Traitement en cours", "Attendez la fin du traitement actuel avant d'en lancer un autre.")
+            return False
+        if not operation:
+            operation = (self.generation_title.get() if self.generation_window
+                         and self.generation_window.winfo_exists() else "Traitement SICORPA")
+        self.busy = True
+        self._set_busy_ui(True)
+        self.status.set("Traitement en cours…")
+        self.progress.stop()
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(12)
+
+        def worker():
+            try:
+                self.events.put(("success", (success, task(), refresh_data)))
+            except TaskCancelledError as exc:
+                logging.info("Traitement annulé par l'utilisateur : %s", operation)
+                self.events.put(("cancelled", (exc, operation)))
+            except Exception as exc:
+                logging.exception("Échec d’un traitement en arrière-plan")
+                import traceback
+                self.events.put(("error", (exc, traceback.format_exc(), operation)))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def _poll_events(self):
+        """Traite ANNULE séparément d'ERREUR et restaure systématiquement TaskManager."""
+        try:
+            processed = 0
+            while True:
+                kind, payload = self.events.get_nowait()
+                processed += 1
+                if kind == "progress":
+                    value, text = payload
+                    self.status.set(text)
+                    if value < 0:
+                        self.progress.stop(); self.progress.configure(mode="indeterminate"); self.progress.start(12)
+                    else:
+                        self.progress.stop(); self.progress.configure(mode="determinate"); self.progress["value"] = value
+                    self._update_generation_dialog(value, text)
+                elif kind == "success":
+                    callback, result, refresh_data = payload
+                    self.busy = False; self._set_busy_ui(False); self.status.set("Prêt")
+                    self.progress.stop(); self.progress.configure(mode="determinate"); self.progress["value"] = 100
+                    if refresh_data:
+                        try:
+                            self._refresh_dashboard(); self._refresh_explorer_tables()
+                        except Exception:
+                            logging.exception("Échec du rafraîchissement de l’interface")
+                    try:
+                        callback(result)
+                    except Exception as exc:
+                        import traceback
+                        logging.exception("Échec de la finalisation d’un traitement")
+                        self._show_explicit_error(exc, "Finalisation du traitement", traceback.format_exc())
+                elif kind == "cancelled":
+                    _error, operation = payload
+                    self.busy = False; self._set_busy_ui(False); self.status.set("Annulé")
+                    self.progress.stop(); self.progress.configure(mode="determinate"); self.progress["value"] = 0
+                    manager = getattr(self, "task_manager", None)
+                    if manager is not None:
+                        manager.handle_failure()
+                    if hasattr(self, "cancel_task_status"):
+                        self.cancel_task_status.set(f"ANNULE — {operation}")
+                    if self.generation_window and self.generation_window.winfo_exists():
+                        self.generation_bar.stop(); self.generation_bar.configure(mode="determinate"); self.generation_bar["value"] = 0
+                        self.generation_title.set("Traitement annulé")
+                        self.generation_status.set(f"ANNULE — {operation}")
+                        self.generation_close.configure(state="normal")
+                        self.generation_window.protocol("WM_DELETE_WINDOW", self.generation_window.destroy)
+                    logging.info("ANNULE — %s", operation)
+                else:
+                    error, traceback_text, operation = payload
+                    self.busy = False; self._set_busy_ui(False); self.status.set("Erreur")
+                    self.progress.stop(); self.progress.configure(mode="determinate")
+                    manager = getattr(self, "task_manager", None)
+                    if manager is not None:
+                        manager.handle_failure()
+                    report = explain_error(error, traceback_text, operation)
+                    self._generation_failed(report.summary)
+                    self._show_explicit_error(error, operation, traceback_text)
+                if processed >= 100:
+                    break
+        except queue.Empty:
+            pass
+        self.after(10 if not self.events.empty() else 100, self._poll_events)
 
     # ------------------------------------------------------------------
     # Helpers pagination
