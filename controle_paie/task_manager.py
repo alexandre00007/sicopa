@@ -14,6 +14,7 @@ class TaskManager:
     def __init__(self, app):
         self.app = app
         self._controls = []
+        self._control_states = []
         self._active_operation = ""
 
     @staticmethod
@@ -25,15 +26,36 @@ class TaskManager:
         except Exception:
             pass
 
+    @staticmethod
+    def _get_control_state(control) -> str:
+        if control is None:
+            return "normal"
+        try:
+            state = str(control.cget("state") or "normal")
+            return state
+        except Exception:
+            pass
+        try:
+            states = control.state()
+            if "disabled" in states:
+                return "disabled"
+            if "readonly" in states:
+                return "readonly"
+        except Exception:
+            pass
+        return "normal"
+
     def _remember_controls(self, controls: Optional[Iterable]) -> None:
         self._controls = [control for control in (controls or []) if control is not None]
+        self._control_states = [(control, self._get_control_state(control)) for control in self._controls]
         for control in self._controls:
             self._set_control_state(control, "disabled")
 
     def restore_controls(self) -> None:
-        for control in self._controls:
-            self._set_control_state(control, "normal")
+        for control, state in self._control_states:
+            self._set_control_state(control, state)
         self._controls = []
+        self._control_states = []
         self._active_operation = ""
 
     def run(
