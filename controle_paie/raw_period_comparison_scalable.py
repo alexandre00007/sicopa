@@ -16,7 +16,7 @@ class ScalableRawPeriodComparisonService(AmbiguityAwareRawPeriodComparisonServic
     HEADERS = [
         "Statut","Matricule A","Matricule B","Nom A","Nom B","Prénom A","Prénom B",
         "Commun matricule","Commun nom","Régime A","Régime B","Institution A","Institution B",
-        "Occ A","Occ B","Brut A","Brut B","Écart brut","Net A","Net B","Écart net",
+        "Répétitions A","Répétitions B","Brut A","Brut B","Écart brut","Net A","Net B","Écart net",
         "Section A","Section B","Catégorie A","Catégorie B","Grade A","Grade B","Unité A",
         "Unité B","Province A","Province B","Diagnostic",
     ]
