@@ -58,7 +58,7 @@ MIGRATIONS = {
 
 
 def migrate_governance(db) -> None:
-    """Migrations versionnees des briques transversales introduites apres le schema historique."""
+    """Migrations versionnees des briques transversales ajoutees apres le schema historique."""
     with db.connect() as con:
         con.execute("""CREATE TABLE IF NOT EXISTS migrations_sicorpa (
             version INTEGER PRIMARY KEY, nom VARCHAR NOT NULL,
@@ -106,8 +106,10 @@ class DataQualityService:
             row = con.execute(f"""SELECT COUNT(*),
                 SUM(CASE WHEN matricule_normalise NOT IN ('','NU') THEN 1 ELSE 0 END),
                 SUM(CASE WHEN nom_normalise<>'' THEN 1 ELSE 0 END),
-                COUNT(*)-COUNT(DISTINCT CASE WHEN matricule_normalise NOT IN ('','NU') THEN matricule_normalise END),
-                COUNT(*)-COUNT(DISTINCT CASE WHEN nom_normalise<>'' THEN nom_normalise END)
+                SUM(CASE WHEN matricule_normalise NOT IN ('','NU') THEN 1 ELSE 0 END)
+                  - COUNT(DISTINCT CASE WHEN matricule_normalise NOT IN ('','NU') THEN matricule_normalise END),
+                SUM(CASE WHEN nom_normalise<>'' THEN 1 ELSE 0 END)
+                  - COUNT(DISTINCT CASE WHEN nom_normalise<>'' THEN nom_normalise END)
                 FROM {table} WHERE execution_id=?""", [execution_id]).fetchone()
             total = int(row[0] or 0)
             usable_mat = int(row[1] or 0)
@@ -130,41 +132,66 @@ class DataQualityService:
         return {"execution_id": execution_id, "lignes": total, "score": score, "niveau": level,
                 "taux_matricules": rate_mat, "taux_noms": rate_name}
 
+    def backfill(self, limit: int = 100) -> int:
+        """Calcule la qualite des imports recents qui ne possedent pas encore de score."""
+        with self.db.connect() as con:
+            rows = con.execute("""SELECT DISTINCT j.execution_id FROM journal_executions j
+                LEFT JOIN qualite_imports q ON q.execution_id=j.execution_id
+                WHERE q.execution_id IS NULL
+                  AND j.type_operation IN ('IMPORT_ACCESS','IMPORT_PAIE_EXCEL','IMPORT_EXCEL')
+                  AND j.statut LIKE 'TERMINE%'
+                ORDER BY j.execution_id DESC LIMIT ?""", [max(1, min(int(limit), 1000))]).fetchall()
+        done = 0
+        for (execution_id,) in rows:
+            try:
+                self.calculate(execution_id)
+                done += 1
+            except Exception:
+                pass
+        return done
+
+    def list_recent(self, limit: int = 200) -> list[tuple]:
+        with self.db.connect() as con:
+            return con.execute("""SELECT q.execution_id,q.type_source,q.table_destination,q.lignes,
+                    q.taux_matricules,q.taux_noms,q.matricules_dupliques,q.noms_dupliques,
+                    q.score,q.niveau,q.calcule_le
+                FROM qualite_imports q ORDER BY q.calcule_le DESC LIMIT ?""",
+                [max(1, min(int(limit), 2000))]).fetchall()
+
 
 class RawCatalogService:
     def __init__(self, db):
         self.db = db
 
     def refresh(self) -> list[tuple]:
-        """Reconstruit le catalogue depuis les metadonnees; COUNT(*) n'est utilise qu'en secours."""
+        """Recalcule une fois les metadonnees apres mutation; les ecrans lisent ensuite le cache."""
         with self.db.connect() as con:
             names = [row[0] for row in con.execute("""SELECT table_name FROM information_schema.tables
                 WHERE table_schema='main' AND table_name LIKE 'raw_%' ORDER BY table_name""").fetchall()]
+            fusion_table = bool(con.execute("""SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema='main' AND table_name='fusions_raw'""").fetchone()[0])
             for name in names:
+                safe = name.replace('"', '""')
+                lines = int(con.execute(f'SELECT COUNT(*) FROM "{safe}"').fetchone()[0])
                 columns = int(con.execute("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='main' AND table_name=?", [name]).fetchone()[0])
-                meta = con.execute("""SELECT SUM(COALESCE(lignes_chargees,0)),MAX(trimestre),MAX(annee),
+                meta = con.execute("""SELECT MAX(trimestre),MAX(annee),
                         STRING_AGG(DISTINCT regime, ', '),STRING_AGG(DISTINCT institution_id, ', '),
                         MAX(execution_id)
                     FROM journal_executions WHERE table_destination=? AND statut LIKE 'TERMINE%'""", [name]).fetchone()
-                lines = int(meta[0] or 0)
-                if not lines:
-                    safe = name.replace('"', '""')
-                    lines = int(con.execute(f'SELECT COUNT(*) FROM "{safe}"').fetchone()[0])
-                fusion = con.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='main' AND table_name='fusions_raw'").fetchone()[0]
                 raw_type = "FUSION" if name.startswith("raw_multi_regimes_") else "IMPORT"
-                if fusion and raw_type == "FUSION":
+                if fusion_table and raw_type == "FUSION":
                     fm = con.execute("""SELECT trimestre,annee FROM fusions_raw WHERE table_destination=?
                         ORDER BY cree_le DESC LIMIT 1""", [name]).fetchone()
                     if fm:
-                        meta = (lines, fm[0], fm[1], meta[3], meta[4], meta[5])
-                quality = con.execute("""SELECT AVG(q.score),MAX(q.niveau) FROM qualite_imports q
+                        meta = (fm[0], fm[1], meta[2], meta[3], meta[4])
+                quality = con.execute("""SELECT AVG(q.score),ARG_MAX(q.niveau,q.score) FROM qualite_imports q
                     JOIN journal_executions j ON j.execution_id=q.execution_id WHERE j.table_destination=?""", [name]).fetchone()
                 con.execute("""INSERT OR REPLACE INTO catalogue_raw
                     (table_name,type_raw,trimestre,annee,regimes,institutions,lignes,colonnes,
                      score_qualite,niveau_qualite,derniere_execution_id,derniere_mise_a_jour)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
-                    [name, raw_type, meta[1], meta[2], meta[3], meta[4], lines, columns,
-                     quality[0], quality[1], meta[5]])
+                    [name, raw_type, meta[0], meta[1], meta[2], meta[3], lines, columns,
+                     quality[0], quality[1], meta[4]])
             if names:
                 placeholders = ",".join("?" for _ in names)
                 con.execute(f"DELETE FROM catalogue_raw WHERE table_name NOT IN ({placeholders})", names)
@@ -177,6 +204,12 @@ class RawCatalogService:
         with self.db.connect() as con:
             rows = con.execute("SELECT table_name,lignes FROM catalogue_raw ORDER BY table_name").fetchall()
         return rows or [(row[0], row[1]) for row in self.refresh()]
+
+    def list_detailed(self) -> list[tuple]:
+        with self.db.connect() as con:
+            return con.execute("""SELECT table_name,type_raw,trimestre,annee,regimes,institutions,
+                    lignes,colonnes,ROUND(score_qualite,2),niveau_qualite,derniere_mise_a_jour
+                FROM catalogue_raw ORDER BY table_name""").fetchall()
 
 
 @dataclass
@@ -207,6 +240,8 @@ class TreatmentJournalService:
             object_id = next((result.get(k) for k in ("comparison_id","fusion_id","campaign_id","group_id","execution_id") if result.get(k)), None)
             lines = next((result.get(k) for k in ("rows","base_rows","lignes") if result.get(k) is not None), None)
             output = result.get("path") or result.get("folder")
+        elif isinstance(result, (str, bytes)):
+            object_id = str(result)
         with self.db.connect() as con:
             con.execute("""UPDATE journal_traitements SET statut='TERMINE',date_fin=CURRENT_TIMESTAMP,
                 duree_secondes=?,lignes=?,objet_id=?,fichier_sortie=? WHERE traitement_id=?""",
@@ -217,6 +252,12 @@ class TreatmentJournalService:
             con.execute("""UPDATE journal_traitements SET statut='ERREUR',date_fin=CURRENT_TIMESTAMP,
                 duree_secondes=?,message=? WHERE traitement_id=?""",
                 [time.perf_counter()-token.started, str(exc), token.treatment_id])
+
+    def list_recent(self, limit: int = 200) -> list[tuple]:
+        with self.db.connect() as con:
+            return con.execute("""SELECT operation,statut,date_debut,date_fin,ROUND(duree_secondes,3),
+                    lignes,objet_id,message FROM journal_traitements
+                ORDER BY date_debut DESC LIMIT ?""", [max(1, min(int(limit), 2000))]).fetchall()
 
 
 class ObservedIngestionProxy:
