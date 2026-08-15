@@ -53,7 +53,15 @@ class PolicyRawPeriodComparisonService(FusionAwareRawPeriodComparisonService):
 
                 progress and progress(40, "Matching strict sans sélection arbitraire")
                 params = ids_a + [quarter, year] + ids_b + [quarter, year] + [cmp_id]
-                con.execute(f"""INSERT INTO resultats_comparaison_raw_periode
+                con.execute(f"""INSERT INTO resultats_comparaison_raw_periode (
+                    comparaison_id,cle_resultat,statut,commun_matricule,commun_nom,
+                    meme_matricule_nom_different,meme_nom_matricule_different,
+                    matricule_a,matricule_b,nom_norm_a,nom_norm_b,nom_a,nom_b,prenom_a,prenom_b,
+                    regime_a,regime_b,institution_a,institution_b,occurrences_a,occurrences_b,
+                    brut_a,brut_b,net_a,net_b,ecart_brut,ecart_net,section_a,section_b,
+                    categorie_a,categorie_b,grade_a,grade_b,unite_a,unite_b,province_a,province_b,
+                    doublon_matricule_a,doublon_matricule_b,doublon_nom_a,doublon_nom_b,diagnostic
+                )
                     WITH a0 AS (
                       SELECT matricule_normalise,nom_normalise,MIN(NULLIF(nom,'')) nom,MIN(NULLIF(prenom,'')) prenom,
                         STRING_AGG(DISTINCT COALESCE(regime,''), ', ') regime,
