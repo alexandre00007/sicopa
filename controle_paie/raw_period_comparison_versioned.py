@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from .analysis_versioning import AnalysisVersionRegistry
 from .identity_policy import IDENTITY_ALGORITHM_VERSION
-from .raw_period_comparison_policy_scalable import PolicyScalableRawPeriodComparisonService
+from .raw_period_occurrence_exports import OccurrenceExportRawPeriodComparisonService
 
 
-class VersionedRawPeriodComparisonService(PolicyScalableRawPeriodComparisonService):
-    """Comparaison RAW stricte avec politique centrale et historique immuable des réanalyses."""
+class VersionedRawPeriodComparisonService(OccurrenceExportRawPeriodComparisonService):
+    """Comparaison RAW stricte, occurrences source et historique immuable des réanalyses."""
 
     ANALYSIS_TYPE = "COMPARAISON_RAW_PERIODE"
 
@@ -18,6 +18,7 @@ class VersionedRawPeriodComparisonService(PolicyScalableRawPeriodComparisonServi
                 _parent_id: str | None = None, _action: str = "ANALYSE"):
         info = super().analyze(table_a, table_b, quarter, year, progress=progress)
         base, metrics = self.summary(info["id"])
+        occurrence_metrics = self.occurrence_summary(info["id"])
         self.version_registry.record(
             self.ANALYSIS_TYPE,
             info["id"],
@@ -31,6 +32,7 @@ class VersionedRawPeriodComparisonService(PolicyScalableRawPeriodComparisonServi
                 "communs_exacts": int(metrics[2] or 0),
                 "matricule_nom_different": int(metrics[3] or 0),
                 "nom_matricule_different": int(metrics[4] or 0),
+                "occurrences": occurrence_metrics,
             },
             algorithm_version=IDENTITY_ALGORITHM_VERSION,
         )
