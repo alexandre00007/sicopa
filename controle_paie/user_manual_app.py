@@ -14,6 +14,41 @@ from .responsive_tabs_app import PayrollAppWithResponsiveTabs
 class PayrollAppWithUserManual(PayrollAppWithResponsiveTabs):
     """Enrichit Aide > Mode d'emploi avec un guide rapide et un manuel PDF complet."""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._install_manual_menu_entry()
+
+    def _install_manual_menu_entry(self):
+        """Ajoute Aide > Manuel PDF complet sans recopier tout le menu historique."""
+        try:
+            menubar = self.nametowidget(self.cget("menu"))
+            end = menubar.index("end")
+            if end is None:
+                return
+            for index in range(end + 1):
+                if str(menubar.type(index)) != "cascade":
+                    continue
+                if str(menubar.entrycget(index, "label")) != "Aide":
+                    continue
+                help_menu = self.nametowidget(menubar.entrycget(index, "menu"))
+                labels = []
+                help_end = help_menu.index("end")
+                if help_end is not None:
+                    for item in range(help_end + 1):
+                        try:
+                            labels.append(str(help_menu.entrycget(item, "label")))
+                        except tk.TclError:
+                            pass
+                if "Manuel PDF complet" not in labels:
+                    help_menu.insert_command(
+                        1,
+                        label="Manuel PDF complet",
+                        command=lambda: self._generate_and_open_manual(self),
+                    )
+                return
+        except tk.TclError:
+            logging.exception("Impossible d'ajouter l'entree Manuel PDF dans le menu Aide")
+
     def _manual_pdf_path(self) -> Path:
         folder = Path(self.config_data.results_dir) / "Documentation SICORPA"
         return folder / "Manuel_utilisateur_SICORPA.pdf"
