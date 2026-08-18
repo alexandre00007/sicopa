@@ -34,12 +34,20 @@ def _seed(db):
                  amount,0,0,0,0,0,0,amount,amount,line_no])
 
 
-def test_complete_export_uses_low_memory_annexes(tmp_path):
-    db = Database(tmp_path / 'fusion_low_memory.duckdb')
+def _count_rows(wb, prefix):
+    total = 0
+    for ws in wb.worksheets:
+        if ws.title.startswith(prefix):
+            total += max(0, sum(1 for _ in ws.iter_rows(values_only=True)) - 1)
+    return total
+
+
+def test_complete_export_uses_partitioned_annexes(tmp_path):
+    db = Database(tmp_path / 'fusion_partitioned.duckdb')
     db.migrate()
     _seed(db)
     service = CompleteExportRawFusionService(db)
-    info = service.create_fusion(['raw_a','raw_b'],'T1',2026,'lowmem')
+    info = service.create_fusion(['raw_a','raw_b'],'T1',2026,'partitioned')
 
     parent = tmp_path / 'exports'
     parent.mkdir()
@@ -47,19 +55,21 @@ def test_complete_export_uses_low_memory_annexes(tmp_path):
 
     annex11 = folder / '11_toutes_occurrences_confondues.xlsx'
     annex12 = folder / '12_synthese_occurrences_agents_a_risque.xlsx'
-    assert annex11.exists()
-    assert annex12.exists()
+    assert annex11.exists() and annex12.exists()
 
     wb11 = load_workbook(annex11, read_only=True, data_only=True)
     control11 = {r[0]: r[1] for r in wb11['Controle coherence'].iter_rows(min_row=2, values_only=True)}
-    assert control11['Mode export'] == 'FAIBLE_MEMOIRE'
+    assert control11['Mode export'] == 'PARTITIONNE_PAR_EXECUTION'
+    assert control11['Executions traitees'] == 2
     assert control11['Lignes physiques sources'] == 3
     assert control11['Lignes exportees'] == 3
     assert control11['Controle'] == 'OK'
+    assert _count_rows(wb11, 'Toutes les lignes') == 3
 
     wb12 = load_workbook(annex12, read_only=True, data_only=True)
     control12 = {r[0]: r[1] for r in wb12['Controle'].iter_rows(min_row=2, values_only=True)}
-    assert control12['Mode export'] == 'FAIBLE_MEMOIRE'
-    assert control12['Lignes physiques a risque attendues'] == 3
+    assert control12['Mode export'] == 'PARTITIONNE_PAR_EXECUTION'
+    assert control12['Executions traitees'] == 2
+    assert control12['Agents a risque'] == 1
     assert control12['Lignes detail exportees'] == 3
-    assert control12['Controle detail'] == 'OK'
+    assert control12['Controle'] == 'OK'
