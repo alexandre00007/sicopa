@@ -12,7 +12,7 @@ from .raw_fusion_risk_export_low_memory import LowMemoryRawFusionRiskExporter
 
 
 class _WorkbookPartitionWriter:
-    """Ecrit plusieurs curseurs successifs dans une même famille de feuilles Excel."""
+    """Ecrit plusieurs curseurs successifs dans une meme famille de feuilles Excel."""
 
     def __init__(self, book: Workbook, headers, sheet_name: str):
         self.book = book
@@ -78,7 +78,7 @@ def _fusion_executions(con, fusion_id: str):
 
 
 def _prepare_compact_identity_stats(con, fusion_id: str, quarter: str, year: int, executions) -> None:
-    """Construit seulement une ligne partielle par identité/exécution, jamais toutes les lignes physiques."""
+    """Construit seulement une ligne partielle par identite/execution, jamais toutes les lignes physiques."""
     con.execute("DROP TABLE IF EXISTS tmp_sicorpa_identity_parts")
     con.execute("DROP TABLE IF EXISTS tmp_sicorpa_identity_stats")
     con.execute("""CREATE TEMP TABLE tmp_sicorpa_identity_parts (
@@ -121,7 +121,7 @@ def _cleanup_compact_stats(con):
 
 
 class PartitionedOccurrenceExportRawFusionService(LowMemoryOccurrenceExportRawFusionService):
-    """Annexe 11 : lecture et écriture exécution par exécution, mémoire bornée."""
+    """Annexe 11 : lecture et ecriture execution par execution, memoire bornee."""
 
     def _execution_detail_query(self) -> str:
         key = _person_key_sql("p")
@@ -175,7 +175,7 @@ class PartitionedOccurrenceExportRawFusionService(LowMemoryOccurrenceExportRawFu
                 if physical_rows != aggregated or abs(gross_diff)>0.01 or abs(net_diff)>0.01:
                     raise ValueError(f"Incoherence de la fusion : lignes {physical_rows}/{aggregated}, ecart brut {gross_diff:.2f}, ecart net {net_diff:.2f}.")
 
-                progress and progress(91, "Annexe 11 : synthèse par agent")
+                progress and progress(91, "Annexe 11 : synthese par agent")
                 summary_writer = _WorkbookPartitionWriter(book, self.SUMMARY_HEADERS, "Synthese agents")
                 summary_writer.append_cursor(con.execute(self._summary_query(), [fusion_id]), 1000)
 
@@ -204,17 +204,21 @@ class PartitionedOccurrenceExportRawFusionService(LowMemoryOccurrenceExportRawFu
 
 
 class PartitionedRawFusionRiskExporter(LowMemoryRawFusionRiskExporter):
-    """Annexe 12 : détails à risque écrits exécution par exécution."""
+    """Annexe 12 : syntheses d'abord, details ligne par ligne ensuite."""
 
-    def _risk_summary_partitioned(self) -> str:
+    def _risk_summary_partitioned(self, category_filter: str | None = None):
         category=self._category_expr_low_memory(); risk=self._risk_predicate_low_memory()
-        return f"""SELECT {category},r.statut,r.matricule_normalise,r.nom_normalise,r.nom,r.prenom,r.regimes,r.institutions,
+        extra=""; params=[]
+        if category_filter:
+            extra=f" AND ({category})=?"; params=[category_filter]
+        sql=f"""SELECT {category},r.statut,r.matricule_normalise,r.nom_normalise,r.nom,r.prenom,r.regimes,r.institutions,
             r.nb_regimes,r.nb_institutions,r.occurrences,GREATEST(r.occurrences-1,0),s.nb_executions,s.nb_tables,
             r.masse_brute,r.masse_net,COALESCE(d.doublon_matricule,FALSE),COALESCE(d.doublon_nom,FALSE),
             r.paiement_multi_regime,r.paiement_multiple_meme_regime,r.identite_incoherente,r.diagnostic
         FROM resultats_fusion_multi r JOIN tmp_sicorpa_identity_stats s ON s.person_key=r.person_key
         LEFT JOIN resultats_fusion_doublons d ON d.fusion_id=r.fusion_id AND d.person_key=r.person_key
-        WHERE r.fusion_id=? AND {risk}"""
+        WHERE r.fusion_id=? AND {risk}{extra}"""
+        return sql,params
 
     def _risk_execution_detail(self, category_filter: str | None = None):
         key=_person_key_sql("p"); category=self._category_expr_low_memory(); risk=self._risk_predicate_low_memory()
@@ -236,31 +240,63 @@ class PartitionedRawFusionRiskExporter(LowMemoryRawFusionRiskExporter):
 
     def export(self, fusion_id: str, folder: str | Path, progress=None) -> Path:
         folder=Path(folder); target=folder/"12_synthese_occurrences_agents_a_risque.xlsx"; book=Workbook(write_only=True)
-        categories=[("01_Par_matricule","PAR_MATRICULE"),("02_Par_nom","PAR_NOM"),("03_Matricule_et_nom","PAR_MATRICULE_ET_NOM"),
-            ("04_Matricule_NU","MATRICULE_NU"),("05_Null_vide","MATRICULE_NULL_OU_VIDE"),("06_Non_exploitable","MATRICULE_NON_EXPLOITABLE"),
-            ("07_Identites_incoh","MATRICULE_PARTAGE_NOMS_DIFFERENTS"),("08_Multi_regimes","MULTI_REGIME"),
-            ("09_Paiements_multiples","PAIEMENT_MULTIPLE_MEME_REGIME"),("10_Plusieurs_instit","PLUSIEURS_INSTITUTIONS"),
-            ("11_Autres_anomalies","AUTRE_ANOMALIE")]
+        categories=[
+            ("Matricule","PAR_MATRICULE"),
+            ("Nom","PAR_NOM"),
+            ("Matricule_Nom","PAR_MATRICULE_ET_NOM"),
+            ("Matricule_NU","MATRICULE_NU"),
+            ("Null_vide","MATRICULE_NULL_OU_VIDE"),
+            ("Non_exploitable","MATRICULE_NON_EXPLOITABLE"),
+            ("Identites_incoh","MATRICULE_PARTAGE_NOMS_DIFFERENTS"),
+            ("Multi_regimes","MULTI_REGIME"),
+            ("Paiements_multiples","PAIEMENT_MULTIPLE_MEME_REGIME"),
+            ("Plusieurs_instit","PLUSIEURS_INSTITUTIONS"),
+            ("Autres_anomalies","AUTRE_ANOMALIE"),
+        ]
         with self.db.connect() as con:
             _configure_partitioned(con); quarter,year=_fusion_scope(con,fusion_id); executions=_fusion_executions(con,fusion_id)
             _prepare_compact_identity_stats(con,fusion_id,quarter,year,executions)
             try:
-                summary_sql=self._risk_summary_partitioned()
-                summary_writer=_WorkbookPartitionWriter(book,RISK_SUMMARY_HEADERS,"Synthese generale")
-                summary_writer.append_cursor(con.execute(summary_sql,[fusion_id]),1000)
-                all_agents=int(con.execute("SELECT COUNT(*) FROM resultats_fusion_multi WHERE fusion_id=?",[fusion_id]).fetchone()[0] or 0)
+                # 1) Toutes les syntheses en premier.
+                summary_sql,summary_extra=self._risk_summary_partitioned()
+                global_summary=_WorkbookPartitionWriter(book,RISK_SUMMARY_HEADERS,"00_Synthese_generale")
+                global_summary.append_cursor(con.execute(summary_sql,[fusion_id]+summary_extra),1000)
+
+                category_summary_counts={}
+                for index,(label,category_name) in enumerate(categories,1):
+                    sql,extra=self._risk_summary_partitioned(category_name)
+                    writer=_WorkbookPartitionWriter(book,RISK_SUMMARY_HEADERS,f"S{index:02d}_{label}")
+                    writer.append_cursor(con.execute(sql,[fusion_id]+extra),1000)
+                    category_summary_counts[category_name]=writer.total
+
+                # 2) Ensuite seulement les annexes de detail ligne par ligne.
                 detail_total=0
-                writers={name:_WorkbookPartitionWriter(book,RISK_DETAIL_HEADERS,name) for name,_ in categories}
-                for index,(execution_id,table_source) in enumerate(executions,1):
-                    progress and progress(97+int(index/max(1,len(executions))),f"Annexe 12 : source {index}/{max(1,len(executions))}")
-                    for sheet_name,category_name in categories:
+                detail_counts={}
+                total_exec=max(1,len(executions))
+                for cat_index,(label,category_name) in enumerate(categories,1):
+                    writer=_WorkbookPartitionWriter(book,RISK_DETAIL_HEADERS,f"D{cat_index:02d}_{label}")
+                    for exec_index,(execution_id,table_source) in enumerate(executions,1):
+                        progress and progress(
+                            97+int(exec_index/total_exec),
+                            f"Annexe 12 : detail {label} - source {exec_index}/{total_exec}"
+                        )
                         sql,extra=self._risk_execution_detail(category_name)
                         cursor=con.execute(sql,[table_source or "",fusion_id,execution_id,quarter,year]+extra)
-                        detail_total += writers[sheet_name].append_cursor(cursor,1000)
+                        detail_total += writer.append_cursor(cursor,1000)
+                    detail_counts[category_name]=writer.total
+
+                all_agents=int(con.execute("SELECT COUNT(*) FROM resultats_fusion_multi WHERE fusion_id=?",[fusion_id]).fetchone()[0] or 0)
                 control=book.create_sheet("Controle")
-                control.append(["Indicateur","Valeur"]); control.append(["Mode export","PARTITIONNE_PAR_EXECUTION"])
-                control.append(["Agents analyses au total",all_agents]); control.append(["Agents a risque",summary_writer.total])
-                control.append(["Executions traitees",len(executions)]); control.append(["Lignes detail exportees",detail_total])
+                control.append(["Indicateur","Valeur"])
+                control.append(["Mode export","PARTITIONNE_PAR_EXECUTION"])
+                control.append(["Organisation","SYNTHESES_PUIS_DETAILS"])
+                control.append(["Agents analyses au total",all_agents])
+                control.append(["Agents a risque",global_summary.total])
+                control.append(["Executions traitees",len(executions)])
+                control.append(["Lignes detail exportees",detail_total])
+                for label,category_name in categories:
+                    control.append([f"Synthese {label}",category_summary_counts.get(category_name,0)])
+                    control.append([f"Detail {label}",detail_counts.get(category_name,0)])
                 control.append(["Controle","OK"])
             finally:
                 _cleanup_compact_stats(con)
