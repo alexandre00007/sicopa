@@ -2,7 +2,7 @@ import logging
 import tkinter as tk
 from tkinter import messagebox
 
-from controle_paie.responsive_tabs_app import PayrollAppWithResponsiveTabs as PayrollApp
+from controle_paie.user_manual_app import PayrollAppWithUserManual as PayrollApp
 
 
 if __name__ == "__main__":
