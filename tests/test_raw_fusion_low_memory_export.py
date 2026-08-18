@@ -69,17 +69,31 @@ def test_complete_export_uses_partitioned_annexes(tmp_path):
     wb12 = load_workbook(annex12, read_only=True, data_only=True)
     control12 = {r[0]: r[1] for r in wb12['Controle'].iter_rows(min_row=2, values_only=True)}
     assert control12['Mode export'] == 'PARTITIONNE_PAR_EXECUTION'
-    assert control12['Organisation'] == 'SYNTHESES_PUIS_DETAILS'
+    assert control12['Organisation'] == 'SYNTHESE_CONCISE_PUIS_OCCURRENCES'
+    assert control12['Nature categories'] == 'NON_EXCLUSIVES'
     assert control12['Executions traitees'] == 2
-    assert control12['Agents a risque'] == 1
-    assert control12['Lignes detail exportees'] == 3
+    assert control12['Synthese matricules'] == 1
+    assert control12['Synthese noms'] == 1
+    assert control12['Synthese multi-regimes'] == 1
     assert control12['Controle'] == 'OK'
 
     names = wb12.sheetnames
-    assert names[0] == '00_Synthese_generale'
-    assert 'S01_Matricule' in names
-    assert 'S02_Nom' in names
-    assert 'S04_Matricule_NU' in names
-    first_detail = min(i for i, name in enumerate(names) if name.startswith('D'))
-    last_summary = max(i for i, name in enumerate(names) if name.startswith('S'))
-    assert last_summary < first_detail
+    assert names[:4] == [
+        '00_Synthese_anomalies',
+        '01_Synthese_matricule',
+        '02_Synthese_nom',
+        '03_Synthese_multi_regimes',
+    ]
+    assert 'D01_Occ_matricule' in names
+    assert 'D02_Occ_nom' in names
+    assert 'D05_Occ_multi_regimes' in names
+
+    summary_rows = list(wb12['00_Synthese_anomalies'].iter_rows(min_row=2, values_only=True))
+    labels = {row[0] for row in summary_rows}
+    assert 'ANOMALIE_PAR_MATRICULE' in labels
+    assert 'ANOMALIE_PAR_NOM' in labels
+    assert 'MULTI_REGIME_REPETE' in labels
+
+    assert _count_rows(wb12, 'D01_Occ_matricule') == 3
+    assert _count_rows(wb12, 'D02_Occ_nom') == 3
+    assert _count_rows(wb12, 'D05_Occ_multi_regimes') == 3
