@@ -2,7 +2,7 @@ import logging
 import tkinter as tk
 from tkinter import messagebox
 
-from controle_paie.user_manual_app import PayrollAppWithUserManual as PayrollApp
+from controle_paie.file_data_search_app import PayrollAppWithFileDataSearch as PayrollApp
 
 
 if __name__ == "__main__":
