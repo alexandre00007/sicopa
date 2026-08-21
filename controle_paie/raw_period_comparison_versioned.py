@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from .analysis_versioning import AnalysisVersionRegistry
 from .identity_policy import IDENTITY_ALGORITHM_VERSION
-from .raw_period_bilateral_export import BilateralExportRawPeriodComparisonService
+from .raw_period_a_to_b_export import AToBExportRawPeriodComparisonService
 
 
-class VersionedRawPeriodComparisonService(BilateralExportRawPeriodComparisonService):
-    """Comparaison RAW stricte, occurrences source, annexe bilatérale et historique immuable."""
+class VersionedRawPeriodComparisonService(AToBExportRawPeriodComparisonService):
+    """Comparaison RAW stricte, occurrences source, annexe A->B et historique immuable."""
 
     ANALYSIS_TYPE = "COMPARAISON_RAW_PERIODE"
 
@@ -39,9 +39,9 @@ class VersionedRawPeriodComparisonService(BilateralExportRawPeriodComparisonServ
         return info
 
     def reanalyze(self, comparison_id: str, progress=None):
-        """Crée une nouvelle comparaison liée à l'ancienne au lieu de la supprimer."""
+        """Cree une nouvelle comparaison liee a l'ancienne au lieu de la supprimer."""
         previous = self.get_comparison(comparison_id)
-        progress and progress(5, "Création d'une nouvelle version de la comparaison")
+        progress and progress(5, "Creation d'une nouvelle version de la comparaison")
         return self.analyze(
             previous["table_a"], previous["table_b"], previous["quarter"], previous["year"],
             progress=progress, _parent_id=comparison_id, _action="REANALYSE",
