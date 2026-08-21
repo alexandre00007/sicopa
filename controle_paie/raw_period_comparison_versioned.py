@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from .analysis_versioning import AnalysisVersionRegistry
 from .identity_policy import IDENTITY_ALGORITHM_VERSION
-from .raw_period_occurrence_exports import OccurrenceExportRawPeriodComparisonService
+from .raw_period_bilateral_export import BilateralExportRawPeriodComparisonService
 
 
-class VersionedRawPeriodComparisonService(OccurrenceExportRawPeriodComparisonService):
-    """Comparaison RAW stricte, occurrences source et historique immuable des réanalyses."""
+class VersionedRawPeriodComparisonService(BilateralExportRawPeriodComparisonService):
+    """Comparaison RAW stricte, occurrences source, annexe bilatérale et historique immuable."""
 
     ANALYSIS_TYPE = "COMPARAISON_RAW_PERIODE"
 
