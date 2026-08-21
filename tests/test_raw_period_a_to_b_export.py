@@ -45,7 +45,6 @@ def test_a_to_b_export_matches_annex12_logic_without_exporting_missing_details(t
     ]
 
     global_ws=wb['Synthese Globale A vers B']
-    # Nom: ALPHA/MULUMBA, BETA et DELTA dans A; deux trouves dans B, DELTA absent.
     assert global_ws['B2'].value == 3
     assert global_ws['C2'].value == 2
     assert global_ws['D2'].value == 1
@@ -70,7 +69,23 @@ def test_a_to_b_export_matches_annex12_logic_without_exporting_missing_details(t
     assert combo.cell(r,3).value == 1
     assert combo.cell(r,19).hyperlink is not None
 
-    # DELTA est absent de B : aucune ligne DELTA ne doit etre recopiee dans le detail Nom.
     detail_nom=wb['Detail_Nom_A_vers_B']
     values=[cell.value for row in detail_nom.iter_rows(min_row=3,values_only=False) for cell in row]
     assert 'DELTA' not in values
+
+    headers=[cell.value for cell in detail_nom[2]]
+    for expected in [
+        'Table_Source_A','Execution_ID_A','Section_A','Categorie_A','Grade_A',
+        'Unite_Affectation_A','Province_A','Table_Source_B','Execution_ID_B',
+        'Section_B','Categorie_B','Grade_B','Unite_Affectation_B','Province_B'
+    ]:
+        assert expected in headers
+
+    first_data={headers[i]: detail_nom.cell(3,i+1).value for i in range(len(headers))}
+    assert first_data['Table_Source_A'] == 'raw_a'
+    assert first_data['Execution_ID_A'] == 'exec_A'
+    assert first_data['Section_A'] == 'SEC'
+    assert first_data['Categorie_A'] == 'CAT'
+    assert first_data['Grade_A'] == 'GR'
+    assert first_data['Unite_Affectation_A'] == 'UNIT'
+    assert first_data['Province_A'] == 'PROV'
