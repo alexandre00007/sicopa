@@ -3,7 +3,8 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from .loaders import IngestionService, read_access_table
+from .fast_access_reader import read_access_table_fast
+from .loaders import IngestionService
 from .standardization import standardize_payroll
 
 
@@ -71,7 +72,7 @@ class FlexibleAccessIngestionService(IngestionService):
                     progress=None) -> str:
         execution_id = str(uuid.uuid4())
         progress and progress(-1, f"Ouverture du fichier Access : {Path(path).name}")
-        raw = read_access_table(path, table, self.config.access_driver)
+        raw = read_access_table_fast(path, table, self.config.access_driver)
         raw_count = len(raw)
         progress and progress(25, f"Table {table} lue : {raw_count:,} lignes".replace(",", " "))
 
@@ -141,6 +142,7 @@ class FlexibleAccessIngestionService(IngestionService):
                 progress and progress(75, f"Données brutes écrites dans {destination}")
                 con.register("standard_frame", standard)
                 con.execute("INSERT INTO paie_standardisee BY NAME SELECT * FROM standard_frame")
+                con.unregister("standard_frame")
                 progress and progress(90, "Données standardisées écrites — finalisation du journal")
                 message = " ; ".join(warnings) if warnings else None
                 con.execute(
