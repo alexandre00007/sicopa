@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Dict, Iterable, Optional
 
 import pandas as pd
@@ -59,10 +58,21 @@ def _normalize_series(values: pd.Series) -> pd.Series:
     return normalize_series(values)
 
 
+def _fast_line_ids(index, execution_id: object, kind: str) -> pd.Index:
+    """Identifiants uniques déterministes par exécution, sans uuid4 Python par ligne.
+
+    Une exécution possède déjà un UUID global. Le couple execution_id + numéro de ligne
+    est donc unique tout en étant beaucoup moins coûteux à produire sur de gros imports.
+    """
+    prefix = f"{execution_id or 'IMPORT'}:{kind}:"
+    numbers = pd.RangeIndex(1, len(index) + 1).astype(str)
+    return pd.Index(prefix + numbers)
+
+
 def standardize_payroll(data: pd.DataFrame, metadata: Dict, mapping: Optional[Dict[str, str]] = None) -> pd.DataFrame:
     renamed = data.rename(columns=infer_mapping(data.columns, mapping),copy=False)
     output = pd.DataFrame(index=renamed.index)
-    output["ligne_paie_id"] = [str(uuid.uuid4()) for _ in range(len(renamed))]
+    output["ligne_paie_id"] = _fast_line_ids(renamed.index, metadata.get("execution_id"), "P")
     for key in ["execution_id", "institution_id", "regime", "trimestre", "annee", "table_source"]:
         output[key] = metadata.get(key)
     output["matricule_source"] = _series(renamed, "matricule_source").fillna("").astype(str)
@@ -89,7 +99,7 @@ def standardize_payroll(data: pd.DataFrame, metadata: Dict, mapping: Optional[Di
 def standardize_declaration(data: pd.DataFrame, metadata: Dict, mapping: Optional[Dict[str, str]] = None) -> pd.DataFrame:
     renamed = data.rename(columns=infer_declaration_mapping(data.columns, mapping),copy=False)
     output = pd.DataFrame(index=renamed.index)
-    output["ligne_declaratif_id"] = [str(uuid.uuid4()) for _ in range(len(renamed))]
+    output["ligne_declaratif_id"] = _fast_line_ids(renamed.index, metadata.get("execution_id"), "D")
     for key in ["execution_id", "institution_id", "regime", "trimestre", "annee", "fichier_source", "feuille_source"]:
         output[key] = metadata.get(key)
     output["matricule_source"] = _series(renamed, "matricule_source").fillna("").astype(str)
