@@ -27,8 +27,12 @@ SUMMARY_HEADERS = [
 
 DETAIL_HEADERS = [
     "Cle de Matching",
-    "ID_A", "Regime_A", "Institution_A", "Matricule_A", "Nom_A", "Prenom_A", "Ligne_Source_A", "Brut_A", "Net_A",
-    "ID_B", "Regime_B", "Institution_B", "Matricule_B", "Nom_B", "Prenom_B", "Ligne_Source_B", "Brut_B", "Net_B",
+    "ID_A", "Table_Source_A", "Execution_ID_A", "Regime_A", "Institution_A",
+    "Matricule_A", "Nom_A", "Prenom_A", "Section_A", "Categorie_A", "Grade_A",
+    "Unite_Affectation_A", "Province_A", "Ligne_Source_A", "Brut_A", "Net_A",
+    "ID_B", "Table_Source_B", "Execution_ID_B", "Regime_B", "Institution_B",
+    "Matricule_B", "Nom_B", "Prenom_B", "Section_B", "Categorie_B", "Grade_B",
+    "Unite_Affectation_B", "Province_B", "Ligne_Source_B", "Brut_B", "Net_B",
     "Occurrences_A", "Occurrences_B", "Statut_A_vers_B", "Niveau_Confiance",
     "Brut_Total_A", "Brut_Total_B", "Ecart_Brut", "Net_Total_A", "Net_Total_B", "Ecart_Net",
     "Brut_Potentiellement_Chevauche", "Diagnostic_Financier",
@@ -193,17 +197,25 @@ class AToBRawPeriodExporter:
 
     def _detail_query(self, table: str, key_col: str):
         return f"""WITH a AS (
-            SELECT {key_col} cle,ligne_paie_id,regime,institution_id,matricule_normalise,nom,prenom,ligne_source,brut,net,
+            SELECT {key_col} cle,ligne_paie_id,table_source,execution_id,regime,institution_id,
+                   matricule_normalise,nom,prenom,section,categorie,grade,unite_affectation,province,
+                   ligne_source,brut,net,
                    row_number() OVER (PARTITION BY {key_col} ORDER BY execution_id,ligne_source,ligne_paie_id) rn
             FROM tmp_a2b_scope WHERE cote='A' AND {key_col} IN (SELECT cle FROM {table} WHERE occurrences_b>0)
         ), b AS (
-            SELECT {key_col} cle,ligne_paie_id,regime,institution_id,matricule_normalise,nom,prenom,ligne_source,brut,net,
+            SELECT {key_col} cle,ligne_paie_id,table_source,execution_id,regime,institution_id,
+                   matricule_normalise,nom,prenom,section,categorie,grade,unite_affectation,province,
+                   ligne_source,brut,net,
                    row_number() OVER (PARTITION BY {key_col} ORDER BY execution_id,ligne_source,ligne_paie_id) rn
             FROM tmp_a2b_scope WHERE cote='B' AND {key_col} IN (SELECT cle FROM {table} WHERE occurrences_b>0)
         )
         SELECT COALESCE(a.cle,b.cle),
-               a.ligne_paie_id,a.regime,a.institution_id,a.matricule_normalise,a.nom,a.prenom,a.ligne_source,a.brut,a.net,
-               b.ligne_paie_id,b.regime,b.institution_id,b.matricule_normalise,b.nom,b.prenom,b.ligne_source,b.brut,b.net,
+               a.ligne_paie_id,a.table_source,a.execution_id,a.regime,a.institution_id,
+               a.matricule_normalise,a.nom,a.prenom,a.section,a.categorie,a.grade,
+               a.unite_affectation,a.province,a.ligne_source,a.brut,a.net,
+               b.ligne_paie_id,b.table_source,b.execution_id,b.regime,b.institution_id,
+               b.matricule_normalise,b.nom,b.prenom,b.section,b.categorie,b.grade,
+               b.unite_affectation,b.province,b.ligne_source,b.brut,b.net,
                k.occurrences_a,k.occurrences_b,k.statut,k.confiance,k.brut_a,k.brut_b,(k.brut_a-k.brut_b),
                k.net_a,k.net_b,(k.net_a-k.net_b),k.brut_chevauche,k.diagnostic_financier
         FROM a FULL OUTER JOIN b ON a.cle=b.cle AND a.rn=b.rn
